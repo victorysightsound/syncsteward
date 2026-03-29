@@ -655,6 +655,7 @@ fn describe_legacy_mode(mode: syncsteward_core::LegacySyncMode) -> &'static str 
     match mode {
         syncsteward_core::LegacySyncMode::Bisync => "legacy bisync",
         syncsteward_core::LegacySyncMode::BackupOneWay => "legacy backup",
+        syncsteward_core::LegacySyncMode::Managed => "managed target",
     }
 }
 

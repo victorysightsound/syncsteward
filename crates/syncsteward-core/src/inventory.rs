@@ -66,6 +66,20 @@ pub(crate) fn build_target_inventory(
         });
     }
 
+    for managed in &config.managed_targets {
+        targets.push(SyncTargetRecord {
+            name: managed.name.clone(),
+            local_path: managed.local_path.clone(),
+            remote_path: managed.remote_path.clone(),
+            legacy_mode: LegacySyncMode::Managed,
+            recommended_mode: managed.mode,
+            configured_mode: Some(managed.mode),
+            rationale: managed.rationale.clone().unwrap_or_else(|| {
+                "Managed target defined explicitly in SyncSteward config.".to_string()
+            }),
+        });
+    }
+
     targets.sort_by(|a, b| a.local_path.cmp(&b.local_path));
 
     Ok(SyncTargetInventoryReport {

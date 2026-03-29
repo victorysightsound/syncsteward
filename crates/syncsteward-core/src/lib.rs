@@ -5,8 +5,9 @@ mod probe;
 mod state;
 
 pub use config::{
-    AppConfig, ConfigSource, FileClass, FileClassPolicy, FolderPolicy, LoadedConfig, PolicyConfig,
-    PolicyMode, RemoteConfig, ScanConfig, default_config_path, load_config,
+    AppConfig, ConfigSource, FileClass, FileClassPolicy, FolderPolicy, LoadedConfig, ManagedTarget,
+    PolicyConfig, PolicyMode, RemoteConfig, ScanConfig, TargetExclusion, TargetSnapshot,
+    default_config_path, load_config,
 };
 pub use inventory::targets;
 pub use model::{

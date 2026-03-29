@@ -52,14 +52,14 @@ Supports:
 
 ### `syncsteward targets`
 
-Read the current `cloud-sync.sh` target inventory and classify each target with a safer recommended policy.
+Read the current `cloud-sync.sh` target inventory and merge it with any explicit managed targets from SyncSteward config.
 
 Outputs:
 
 - script path
-- legacy target list
+- combined target list
 - local and remote path for each target
-- legacy mode (`bisync` or one-way backup)
+- legacy mode (`bisync`, one-way backup, or managed target)
 - recommended SyncSteward policy
 - configured override, if present
 - rationale for the recommendation
@@ -77,6 +77,7 @@ Outputs:
 
 - overall preflight readiness
 - one evaluation per target
+- includes explicit managed targets even when their parent legacy folder is still on hold
 - effective mode after configured overrides are applied
 - blocker details for hold, excluded, missing-path, and global preflight failures
 
@@ -93,6 +94,7 @@ Outputs:
 
 - overall preflight readiness
 - one target evaluation
+- supports both legacy targets and explicit managed targets
 - effective mode after configured overrides are applied
 - blocker details for hold, excluded, missing-path, and global preflight failures
 
@@ -118,6 +120,7 @@ Rules:
 - blocked if global preflight is not ready
 - blocked if the target is on hold, excluded, or missing locally
 - blocked if the legacy sync lock is already owned by another process
+- supports explicit managed targets so curated subfolders can run while broader legacy folders remain on hold
 - merges target-specific exclusion rules into the temporary filter set for the active run
 - uses target-specific snapshot rules when a runtime target should upload SQLite backups instead of the live database files
 - records last target outcome in SyncSteward state

@@ -25,6 +25,8 @@ pub struct AppConfig {
     pub remote: RemoteConfig,
     pub scan: ScanConfig,
     #[serde(default)]
+    pub managed_targets: Vec<ManagedTarget>,
+    #[serde(default)]
     pub alerts: AlertConfig,
     #[serde(default)]
     pub policy: PolicyConfig,
@@ -41,6 +43,16 @@ pub struct RemoteConfig {
 pub struct ScanConfig {
     pub roots: Vec<PathBuf>,
     pub max_examples: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ManagedTarget {
+    pub name: String,
+    pub local_path: PathBuf,
+    pub remote_path: String,
+    pub mode: PolicyMode,
+    #[serde(default)]
+    pub rationale: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -183,6 +195,7 @@ impl Default for AppConfig {
                 ],
                 max_examples: 20,
             },
+            managed_targets: Vec::new(),
             alerts: AlertConfig::default(),
             policy: PolicyConfig::default(),
         }
@@ -351,6 +364,17 @@ fn normalize_config(mut config: AppConfig) -> Result<AppConfig> {
         .iter()
         .map(|path| expand_path(path))
         .collect();
+    config.managed_targets = config
+        .managed_targets
+        .iter()
+        .map(|target| ManagedTarget {
+            name: target.name.clone(),
+            local_path: expand_path(&target.local_path),
+            remote_path: target.remote_path.clone(),
+            mode: target.mode,
+            rationale: target.rationale.clone(),
+        })
+        .collect();
     config.policy.folders = config
         .policy
         .folders
@@ -381,6 +405,14 @@ fn normalize_config(mut config: AppConfig) -> Result<AppConfig> {
     }
     if config.remote.ssh_user.trim().is_empty() {
         bail!("remote.ssh_user must not be empty");
+    }
+    for target in &config.managed_targets {
+        if target.name.trim().is_empty() {
+            bail!("managed_targets.name must not be empty");
+        }
+        if target.remote_path.trim().is_empty() {
+            bail!("managed_targets.remote_path must not be empty");
+        }
     }
     if config.remote.preferred_hosts.is_empty() {
         bail!("remote.preferred_hosts must contain at least one host");

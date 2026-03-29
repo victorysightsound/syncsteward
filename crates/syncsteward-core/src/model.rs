@@ -114,6 +114,7 @@ pub struct TargetBlocker {
 pub enum LegacySyncMode {
     Bisync,
     BackupOneWay,
+    Managed,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]

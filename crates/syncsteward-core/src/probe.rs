@@ -1750,7 +1750,14 @@ fn scan_artifacts(config: &AppConfig) -> ArtifactReport {
     let mut conflict_count = 0usize;
     let mut safe_backup_count = 0usize;
 
-    for root in &config.scan.roots {
+    let mut candidate_roots = config.scan.roots.clone();
+    for target in &config.managed_targets {
+        if !candidate_roots.contains(&target.local_path) {
+            candidate_roots.push(target.local_path.clone());
+        }
+    }
+
+    for root in &candidate_roots {
         if !root.exists() {
             continue;
         }

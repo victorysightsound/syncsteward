@@ -65,6 +65,7 @@ Configuration now carries both operator paths and safety policy:
 - launch agent and remote service locations
 - log, audit-log, state, filter, and legacy-lock paths
 - scan roots
+- explicitly managed targets with local path, remote path, mode, and rationale
 - folder policy overrides
 - file-class policy defaults
 - target-specific exclusion rules for protected bundles and subtrees
@@ -87,6 +88,7 @@ Status is a neutral snapshot of:
 SyncSteward is folder-first, with file-class overrides for dangerous content.
 
 - folder policies express the normal behavior for a subtree
+- managed targets define explicit curated paths that should participate in execution even when a broader parent folder remains on hold
 - file-class policies can tighten safety for specific artifacts
 - target-specific exclusions can protect known bundle/package paths inside otherwise executable targets
 - target-specific snapshots can replace live runtime databases with staged SQLite backups during execution
@@ -126,6 +128,16 @@ For each legacy target it should expose:
 - rationale for the recommendation
 - any explicit configured override that already exists
 
+SyncSteward should also allow explicit managed targets that do not come from the legacy script.
+
+Those managed targets exist for the transition period where:
+
+- a broad legacy folder is too risky to re-enable as a whole
+- one or more curated subfolders inside it are safe enough to back up
+- the operator needs those curated paths to behave like first-class targets in inventory, readiness, execution, and alerts
+
+The first practical example is a held top-level `Notes` folder with a separately managed `Notes/Personal` backup-only target.
+
 It should also expose a target-scoped readiness view so an operator can see:
 
 - the effective mode after configured overrides are applied
@@ -161,6 +173,7 @@ The next execution layer is also explicit and fail-safe:
 
 - folder-scoped execution is allowed only for targets that pass global preflight and target readiness
 - the first executable slice is limited to `backup_only` targets
+- executable targets may come from either the legacy script inventory or explicit managed-target config
 - execution must respect the legacy sync lock so manual runs cannot overlap the old script
 - every target run should append audit history and record last outcome in state
 
@@ -175,6 +188,6 @@ Monitoring should build on the same state model rather than inventing a separate
 
 1. Health and preflight inspection
 2. Coordinated pause/resume and structured audit logging
-3. Per-folder sync policy, config scaffolding, file-class overrides, and quarantine management
+3. Per-folder sync policy, managed subtargets, config scaffolding, file-class overrides, and quarantine management
 4. Notifications and escalation
 5. Menu bar UI and operator workflow polish
