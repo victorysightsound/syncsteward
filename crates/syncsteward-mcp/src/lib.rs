@@ -1,17 +1,27 @@
 use rmcp::{
     Json, ServerHandler, ServiceExt,
     handler::server::router::tool::ToolRouter,
+    handler::server::wrapper::Parameters,
     model::{ServerCapabilities, ServerInfo},
     tool, tool_handler, tool_router,
 };
+use schemars::JsonSchema;
+use serde::Deserialize;
 use std::path::PathBuf;
 use syncsteward_core::{
     ActionTarget, ConfigScaffoldReport, ControlReport, LogAcknowledgeReport, PreflightReport,
-    StatusReport, SyncTargetInventoryReport, acknowledge_latest_log as core_acknowledge_latest_log,
-    pause, preflight, resume, scaffold_config as core_scaffold_config, status, targets,
+    StatusReport, SyncTargetInventoryReport, TargetCheckReport, TargetCheckSetReport,
+    acknowledge_latest_log as core_acknowledge_latest_log, check_target as core_check_target,
+    check_targets as core_check_targets, pause, preflight, resume,
+    scaffold_config as core_scaffold_config, status, targets,
 };
 
 type McpResult<T> = Result<Json<T>, String>;
+
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+struct TargetSelectorRequest {
+    target: String,
+}
 
 #[derive(Debug, Clone)]
 pub struct SyncStewardMcpServer {
@@ -72,6 +82,36 @@ impl SyncStewardMcpServer {
             .await
             .map_err(|error| error.to_string())?
             .map_err(|error| error.to_string())?;
+        Ok(Json(report))
+    }
+
+    #[tool(
+        description = "Explain readiness and blockers for every configured sync target before any selective re-enablement."
+    )]
+    async fn check_targets(&self) -> McpResult<TargetCheckSetReport> {
+        let config_path = self.config_path.clone();
+        let report =
+            tokio::task::spawn_blocking(move || core_check_targets(config_path.as_deref()))
+                .await
+                .map_err(|error| error.to_string())?
+                .map_err(|error| error.to_string())?;
+        Ok(Json(report))
+    }
+
+    #[tool(
+        description = "Explain readiness and blockers for one configured sync target by name or local path."
+    )]
+    async fn check_target(
+        &self,
+        Parameters(request): Parameters<TargetSelectorRequest>,
+    ) -> McpResult<TargetCheckReport> {
+        let config_path = self.config_path.clone();
+        let report = tokio::task::spawn_blocking(move || {
+            core_check_target(config_path.as_deref(), &request.target)
+        })
+        .await
+        .map_err(|error| error.to_string())?
+        .map_err(|error| error.to_string())?;
         Ok(Json(report))
     }
 

@@ -24,6 +24,7 @@ The app is responsible for:
 - file-class safety defaults for risky artifacts like live SQLite databases
 - inventorying the current legacy sync targets before any re-enablement plan is applied
 - turning recommended target policies into an explicit managed config
+- explaining readiness and blockers per target before any selective re-enablement
 - notifications and failure escalation
 - future folder policy management and controlled re-enablement
 
@@ -105,6 +106,12 @@ For each legacy target it should expose:
 - recommended SyncSteward policy
 - rationale for the recommendation
 - any explicit configured override that already exists
+
+It should also expose a target-scoped readiness view so an operator can see:
+
+- the effective mode after configured overrides are applied
+- whether the target is ready under the current global preflight state
+- whether the target is blocked by policy, missing local paths, or unresolved global failures
 
 SyncSteward should also be able to scaffold those recommendations into a real config file so re-enablement happens from explicit policy, not from built-in assumptions.
 

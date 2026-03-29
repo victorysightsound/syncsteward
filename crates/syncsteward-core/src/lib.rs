@@ -14,6 +14,10 @@ pub use model::{
     ArtifactReport, CheckStatus, ConfigScaffoldReport, ControlAction, ControlReport,
     LaunchAgentStatus, LegacySyncMode, LogAcknowledgeReport, LogSummary, PolicySummary,
     PreflightCheck, PreflightReport, RemoteStatus, ServiceState, StatusReport,
-    SyncTargetInventoryReport, SyncTargetRecord,
+    SyncTargetInventoryReport, SyncTargetRecord, TargetBlocker, TargetCheckReport,
+    TargetCheckSetReport, TargetEvaluation,
 };
-pub use probe::{acknowledge_latest_log, pause, preflight, resume, scaffold_config, status};
+pub use probe::{
+    acknowledge_latest_log, check_target, check_targets, pause, preflight, resume, scaffold_config,
+    status,
+};

@@ -743,6 +743,8 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "rmcp",
+ "schemars",
+ "serde",
  "syncsteward-core",
  "tokio",
 ]

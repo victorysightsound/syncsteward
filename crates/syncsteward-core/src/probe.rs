@@ -4,10 +4,10 @@ use crate::model::{
     ActionOutcome, ActionStep, ActionStepStatus, ActionTarget, ArtifactReport, CheckStatus,
     ConfigScaffoldReport, ControlAction, ControlReport, LaunchAgentStatus, LogAcknowledgeReport,
     LogSummary, PolicySummary, PreflightCheck, PreflightReport, RemoteStatus, ServiceState,
-    StatusReport,
+    StatusReport, TargetBlocker, TargetCheckReport, TargetCheckSetReport, TargetEvaluation,
 };
 use crate::state::{load_state, matches_acknowledged_log, save_acknowledged_log};
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 use serde::Serialize;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
@@ -25,6 +25,42 @@ pub fn preflight(config_path: Option<&Path>) -> Result<PreflightReport> {
     let loaded = load_config(config_path)?;
     let status = collect_status(&loaded.config, loaded.source.description());
     Ok(evaluate_preflight(status))
+}
+
+pub fn check_targets(config_path: Option<&Path>) -> Result<TargetCheckSetReport> {
+    let loaded = load_config(config_path)?;
+    let preflight = evaluate_preflight(collect_status(&loaded.config, loaded.source.description()));
+    let inventory = build_target_inventory(&loaded.config, loaded.source.description())?;
+    let evaluations = inventory
+        .targets
+        .into_iter()
+        .map(|target| evaluate_target(&preflight, target))
+        .collect();
+
+    Ok(TargetCheckSetReport {
+        config_source: loaded.source.description(),
+        preflight_ready: preflight.ready,
+        evaluations,
+    })
+}
+
+pub fn check_target(config_path: Option<&Path>, selector: &str) -> Result<TargetCheckReport> {
+    let loaded = load_config(config_path)?;
+    let preflight = evaluate_preflight(collect_status(&loaded.config, loaded.source.description()));
+    let inventory = build_target_inventory(&loaded.config, loaded.source.description())?;
+    let selector_path = expand_path(Path::new(selector));
+    let target = inventory
+        .targets
+        .into_iter()
+        .find(|target| target.name == selector || target.local_path == selector_path)
+        .ok_or_else(|| anyhow!("no sync target matched selector {selector}"))?;
+
+    Ok(TargetCheckReport {
+        config_source: loaded.source.description(),
+        selector: selector.to_string(),
+        preflight_ready: preflight.ready,
+        evaluation: evaluate_target(&preflight, target),
+    })
 }
 
 pub fn pause(config_path: Option<&Path>, target: ActionTarget) -> Result<ControlReport> {
@@ -268,6 +304,56 @@ fn evaluate_preflight(status: StatusReport) -> PreflightReport {
         ready,
         checks,
         status,
+    }
+}
+
+fn evaluate_target(
+    preflight: &PreflightReport,
+    target: crate::model::SyncTargetRecord,
+) -> TargetEvaluation {
+    let effective_mode = target.configured_mode.unwrap_or(target.recommended_mode);
+    let mut blockers = Vec::new();
+
+    for check in &preflight.checks {
+        if check.status == CheckStatus::Fail {
+            blockers.push(TargetBlocker {
+                id: format!("preflight_{}", check.id),
+                summary: check.summary.clone(),
+                detail: check.detail.clone(),
+            });
+        }
+    }
+
+    match effective_mode {
+        crate::config::PolicyMode::Hold => blockers.push(TargetBlocker {
+            id: "policy_hold".to_string(),
+            summary: format!("{} is still on hold", target.name),
+            detail: "this folder has not been approved for re-enablement yet".to_string(),
+        }),
+        crate::config::PolicyMode::Excluded => blockers.push(TargetBlocker {
+            id: "policy_excluded".to_string(),
+            summary: format!("{} is excluded from managed sync", target.name),
+            detail: "this target needs a dedicated workflow outside broad folder sync".to_string(),
+        }),
+        _ => {}
+    }
+
+    if !target.local_path.exists() {
+        blockers.push(TargetBlocker {
+            id: "local_path_missing".to_string(),
+            summary: format!("{} does not exist locally", target.local_path.display()),
+            detail: format!(
+                "target {} cannot run until the local path exists",
+                target.name
+            ),
+        });
+    }
+
+    TargetEvaluation {
+        target,
+        effective_mode,
+        ready: blockers.is_empty(),
+        blockers,
     }
 }
 

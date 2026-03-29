@@ -69,6 +69,38 @@ Supports:
 - human output
 - JSON output
 
+### `syncsteward check-targets`
+
+Explain readiness and blockers for every configured sync target.
+
+Outputs:
+
+- overall preflight readiness
+- one evaluation per target
+- effective mode after configured overrides are applied
+- blocker details for hold, excluded, missing-path, and global preflight failures
+
+Supports:
+
+- human output
+- JSON output
+
+### `syncsteward check-target`
+
+Explain readiness and blockers for one configured sync target by name or local path.
+
+Outputs:
+
+- overall preflight readiness
+- one target evaluation
+- effective mode after configured overrides are applied
+- blocker details for hold, excluded, missing-path, and global preflight failures
+
+Supports:
+
+- human output
+- JSON output
+
 ### `syncsteward acknowledge-latest-log`
 
 Record the current latest `rclone` log as an acknowledged historical baseline after cleanup.
@@ -165,6 +197,14 @@ Run the same guarded preflight checks exposed by the CLI.
 ### `targets`
 
 Read the same legacy-target inventory and recommended policy view exposed by the CLI.
+
+### `check_targets`
+
+Read the same per-target readiness and blocker view exposed by the CLI.
+
+### `check_target`
+
+Read the same single-target readiness and blocker view exposed by the CLI.
 
 ### `acknowledge_latest_log`
 

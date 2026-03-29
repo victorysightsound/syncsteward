@@ -3,8 +3,8 @@ use std::path::PathBuf;
 use syncsteward_core::{
     ActionOutcome, ActionStepStatus, ActionTarget, CheckStatus, ConfigScaffoldReport,
     ControlReport, LogAcknowledgeReport, PolicyMode, PreflightReport, StatusReport,
-    SyncTargetInventoryReport, acknowledge_latest_log, pause, preflight, resume, scaffold_config,
-    status, targets,
+    SyncTargetInventoryReport, TargetCheckReport, TargetCheckSetReport, acknowledge_latest_log,
+    check_target, check_targets, pause, preflight, resume, scaffold_config, status, targets,
 };
 
 #[derive(Debug, Parser)]
@@ -34,6 +34,17 @@ enum Command {
     },
     /// Read the legacy sync targets from the current cloud-sync script and show the safer recommended policy for each one.
     Targets {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Explain readiness and blockers for every configured sync target.
+    CheckTargets {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Explain readiness and blockers for one configured sync target.
+    CheckTarget {
+        target: String,
         #[arg(long)]
         json: bool,
     },
@@ -132,6 +143,44 @@ fn run() -> i32 {
                 print_targets(&report);
             }
             0
+        }
+        Command::CheckTargets { json } => {
+            let report = match check_targets(cli.config.as_deref()) {
+                Ok(report) => report,
+                Err(error) => return fatal_error(&error.to_string()),
+            };
+            if json {
+                if print_json(&report).is_err() {
+                    return fatal_error("failed to serialize target readiness report as JSON");
+                }
+            } else {
+                print_check_targets(&report);
+            }
+            if report.preflight_ready
+                && report.evaluations.iter().all(|evaluation| evaluation.ready)
+            {
+                0
+            } else {
+                2
+            }
+        }
+        Command::CheckTarget { target, json } => {
+            let report = match check_target(cli.config.as_deref(), &target) {
+                Ok(report) => report,
+                Err(error) => return fatal_error(&error.to_string()),
+            };
+            if json {
+                if print_json(&report).is_err() {
+                    return fatal_error("failed to serialize target readiness report as JSON");
+                }
+            } else {
+                print_check_target(&report);
+            }
+            if report.preflight_ready && report.evaluation.ready {
+                0
+            } else {
+                2
+            }
         }
         Command::AcknowledgeLatestLog { json } => {
             let report = match acknowledge_latest_log(cli.config.as_deref()) {
@@ -354,6 +403,62 @@ fn print_targets(report: &SyncTargetInventoryReport) {
             println!("  configured override: {}", describe_policy_mode(mode));
         }
         println!("  why: {}", target.rationale);
+    }
+}
+
+fn print_check_targets(report: &TargetCheckSetReport) {
+    println!(
+        "SyncSteward Target Readiness: {}",
+        if report.preflight_ready {
+            "PRECHECK OK"
+        } else {
+            "PRECHECK BLOCKED"
+        }
+    );
+    println!("Config source: {}", report.config_source);
+    for evaluation in &report.evaluations {
+        print_target_evaluation(evaluation);
+    }
+}
+
+fn print_check_target(report: &TargetCheckReport) {
+    println!(
+        "SyncSteward Target Readiness: {}",
+        if report.preflight_ready {
+            "PRECHECK OK"
+        } else {
+            "PRECHECK BLOCKED"
+        }
+    );
+    println!("Config source: {}", report.config_source);
+    println!("Selector: {}", report.selector);
+    print_target_evaluation(&report.evaluation);
+}
+
+fn print_target_evaluation(evaluation: &syncsteward_core::TargetEvaluation) {
+    println!(
+        "- {} [{}]",
+        evaluation.target.name,
+        if evaluation.ready { "ready" } else { "blocked" }
+    );
+    println!("  local: {}", evaluation.target.local_path.display());
+    println!("  remote: {}", evaluation.target.remote_path);
+    println!(
+        "  legacy: {}, effective mode: {}",
+        describe_legacy_mode(evaluation.target.legacy_mode),
+        describe_policy_mode(evaluation.effective_mode)
+    );
+    if let Some(mode) = evaluation.target.configured_mode {
+        println!("  configured override: {}", describe_policy_mode(mode));
+    }
+    if evaluation.blockers.is_empty() {
+        println!("  blockers: none");
+    } else {
+        println!("  blockers:");
+        for blocker in &evaluation.blockers {
+            println!("    {}: {}", blocker.id, blocker.summary);
+            println!("      {}", blocker.detail);
+        }
     }
 }
 

@@ -22,6 +22,21 @@ pub struct SyncTargetInventoryReport {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct TargetCheckSetReport {
+    pub config_source: String,
+    pub preflight_ready: bool,
+    pub evaluations: Vec<TargetEvaluation>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct TargetCheckReport {
+    pub config_source: String,
+    pub selector: String,
+    pub preflight_ready: bool,
+    pub evaluation: TargetEvaluation,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct SyncTargetRecord {
     pub name: String,
     pub local_path: PathBuf,
@@ -30,6 +45,21 @@ pub struct SyncTargetRecord {
     pub recommended_mode: crate::config::PolicyMode,
     pub configured_mode: Option<crate::config::PolicyMode>,
     pub rationale: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct TargetEvaluation {
+    pub target: SyncTargetRecord,
+    pub effective_mode: crate::config::PolicyMode,
+    pub ready: bool,
+    pub blockers: Vec<TargetBlocker>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct TargetBlocker {
+    pub id: String,
+    pub summary: String,
+    pub detail: String,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema)]

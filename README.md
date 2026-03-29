@@ -23,6 +23,7 @@ SyncSteward does not restart sync automatically. The current build exposes:
 - target inventory from the current `cloud-sync.sh` with safer recommended policies
 - explicit acknowledgement of a historical incident log after cleanup
 - config scaffolding so recommended folder policies become a real SyncSteward config file
+- target-scoped readiness and blocker reports before any selective re-enablement
 
 ## Interfaces
 
@@ -37,6 +38,8 @@ UI comes later, after the CLI and MCP surfaces are stable.
 cargo run -p syncsteward-cli -- status
 cargo run -p syncsteward-cli -- preflight
 cargo run -p syncsteward-cli -- targets
+cargo run -p syncsteward-cli -- check-targets
+cargo run -p syncsteward-cli -- check-target Pictures
 cargo run -p syncsteward-cli -- acknowledge-latest-log
 cargo run -p syncsteward-cli -- scaffold-config
 cargo run -p syncsteward-cli -- pause --target all

@@ -22,6 +22,7 @@
 - acknowledge a historical incident log as the current safe baseline after cleanup
 - scaffold a real SyncSteward config from the current target recommendations
 - classify folders as two-way, backup-only, excluded, or hold
+- explain effective mode and blockers per target before any selective re-enablement
 - protect live SQLite database files and sidecars with backup-only defaults unless explicitly overridden
 - run preflight and folder gating before each sync
 - allow folder-scoped rebaseline instead of broad `--resync`
