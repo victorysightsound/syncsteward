@@ -21,6 +21,7 @@ SyncSteward does not restart sync automatically. The current build exposes:
 - explicit `pause` and guarded `resume`
 - backup-only defaults for live SQLite database files and sidecars
 - target-specific exclusions for protected bundles inside executable targets
+- snapshot-backed handling for runtime SQLite targets like `.memloft`
 - target inventory from the current `cloud-sync.sh` with safer recommended policies
 - explicit acknowledgement of a historical incident log after cleanup
 - config scaffolding so recommended folder policies become a real SyncSteward config file
@@ -43,6 +44,15 @@ SyncSteward now applies first-class target exclusions for native Apple media lib
 - `Music` excludes `Music Library.musiclibrary`
 
 That keeps backup-only media targets focused on ordinary folders and files even if the legacy rclone filter file changes later.
+
+## Runtime Snapshots
+
+SyncSteward now treats `.memloft` as a snapshot-backed runtime target:
+
+- ordinary non-database files still flow through the filtered backup-only sync path
+- `memloft.db`, `payroll.db`, and `vault.db` are uploaded from `sqlite3 .backup` snapshots created in temp space
+
+That preserves live SQLite consistency without requiring the whole runtime tree to be staged locally before every backup.
 
 ## Commands
 

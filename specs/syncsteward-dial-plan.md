@@ -25,6 +25,7 @@
 - explain effective mode and blockers per target before any selective re-enablement
 - protect live SQLite database files and sidecars with backup-only defaults unless explicitly overridden
 - protect native Apple media library bundles with target-specific exclusions inside executable backup-only targets
+- add snapshot-backed execution for runtime SQLite targets like `.memloft`
 - run preflight and folder gating before each sync
 - add single-target execution for approved backup-only targets with dry-run support
 - record per-target last outcome in state and audit

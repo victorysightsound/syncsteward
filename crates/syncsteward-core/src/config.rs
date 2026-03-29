@@ -59,6 +59,8 @@ pub struct PolicyConfig {
     pub file_classes: Vec<FileClassPolicy>,
     #[serde(default = "default_target_exclusions")]
     pub target_exclusions: Vec<TargetExclusion>,
+    #[serde(default = "default_target_snapshots")]
+    pub target_snapshots: Vec<TargetSnapshot>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -80,6 +82,14 @@ pub struct FileClassPolicy {
 pub struct TargetExclusion {
     pub target: String,
     pub patterns: Vec<String>,
+    #[serde(default)]
+    pub rationale: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct TargetSnapshot {
+    pub target: String,
+    pub sqlite_paths: Vec<PathBuf>,
     #[serde(default)]
     pub rationale: Option<String>,
 }
@@ -109,6 +119,7 @@ impl Default for PolicyConfig {
             folders: Vec::new(),
             file_classes: default_file_class_policies(),
             target_exclusions: default_target_exclusions(),
+            target_snapshots: default_target_snapshots(),
         }
     }
 }
@@ -274,6 +285,21 @@ fn default_target_exclusions() -> Vec<TargetExclusion> {
     ]
 }
 
+fn default_target_snapshots() -> Vec<TargetSnapshot> {
+    vec![TargetSnapshot {
+        target: ".memloft".to_string(),
+        sqlite_paths: vec![
+            PathBuf::from("memloft.db"),
+            PathBuf::from("payroll.db"),
+            PathBuf::from("vault.db"),
+        ],
+        rationale: Some(
+            "Runtime SQLite files should be uploaded from sqlite3 backup snapshots instead of the live WAL-backed files."
+                .to_string(),
+        ),
+    }]
+}
+
 pub fn load_config(config_path: Option<&Path>) -> Result<LoadedConfig> {
     if let Some(path) = config_path {
         let explicit_path = expand_path(path);
@@ -333,6 +359,20 @@ fn normalize_config(mut config: AppConfig) -> Result<AppConfig> {
             path: expand_path(&policy.path),
             mode: policy.mode,
             label: policy.label.clone(),
+        })
+        .collect();
+    config.policy.target_snapshots = config
+        .policy
+        .target_snapshots
+        .iter()
+        .map(|policy| TargetSnapshot {
+            target: policy.target.clone(),
+            sqlite_paths: policy
+                .sqlite_paths
+                .iter()
+                .map(|path| expand_path(path))
+                .collect(),
+            rationale: policy.rationale.clone(),
         })
         .collect();
 
@@ -434,6 +474,35 @@ mod tests {
                 .patterns
                 .iter()
                 .any(|pattern| pattern == "Music Library.musiclibrary/**")
+        );
+    }
+
+    #[test]
+    fn default_policy_includes_memloft_snapshot_files() {
+        let policy = PolicyConfig::default();
+        let memloft = policy
+            .target_snapshots
+            .iter()
+            .find(|entry| entry.target == ".memloft")
+            .expect("memloft snapshot policy");
+
+        assert!(
+            memloft
+                .sqlite_paths
+                .iter()
+                .any(|path| path == Path::new("memloft.db"))
+        );
+        assert!(
+            memloft
+                .sqlite_paths
+                .iter()
+                .any(|path| path == Path::new("payroll.db"))
+        );
+        assert!(
+            memloft
+                .sqlite_paths
+                .iter()
+                .any(|path| path == Path::new("vault.db"))
         );
     }
 }

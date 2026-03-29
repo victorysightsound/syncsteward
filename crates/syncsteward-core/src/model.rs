@@ -1,4 +1,4 @@
-use crate::config::{FileClassPolicy, FolderPolicy, TargetExclusion};
+use crate::config::{FileClassPolicy, FolderPolicy, TargetExclusion, TargetSnapshot};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -121,6 +121,7 @@ pub struct PolicySummary {
     pub folder_policies: Vec<FolderPolicy>,
     pub file_class_policies: Vec<FileClassPolicy>,
     pub target_exclusions: Vec<TargetExclusion>,
+    pub target_snapshots: Vec<TargetSnapshot>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]

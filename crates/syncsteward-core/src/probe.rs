@@ -304,14 +304,28 @@ pub fn run_target(
     ));
 
     let temp_dir = make_temp_workdir(&evaluation.target.name)?;
-    let result = execute_backup_only_target(
-        &loaded.config,
-        &evaluation.target,
-        &host,
-        dry_run,
-        &temp_dir,
-        &mut steps,
-    );
+    let result = if let Some(snapshot_policy) =
+        target_snapshot_policy(&loaded.config, &evaluation.target.name)
+    {
+        execute_snapshot_backup_target(
+            &loaded.config,
+            &evaluation.target,
+            snapshot_policy,
+            &host,
+            dry_run,
+            &temp_dir,
+            &mut steps,
+        )
+    } else {
+        execute_backup_only_target(
+            &loaded.config,
+            &evaluation.target,
+            &host,
+            dry_run,
+            &temp_dir,
+            &mut steps,
+        )
+    };
     let cleanup_result = fs::remove_dir_all(&temp_dir);
     drop(acquired_lock);
     if let Err(error) = cleanup_result {
@@ -465,6 +479,7 @@ fn collect_status(config: &AppConfig, config_source: String) -> StatusReport {
         folder_policies: config.policy.folders.clone(),
         file_class_policies: config.policy.file_classes.clone(),
         target_exclusions: config.policy.target_exclusions.clone(),
+        target_snapshots: config.policy.target_snapshots.clone(),
     };
 
     StatusReport {
@@ -904,6 +919,194 @@ fn execute_backup_only_target(
     }
 }
 
+fn execute_snapshot_backup_target(
+    config: &AppConfig,
+    target: &crate::model::SyncTargetRecord,
+    snapshot_policy: &crate::config::TargetSnapshot,
+    host: &str,
+    dry_run: bool,
+    temp_dir: &Path,
+    steps: &mut Vec<ActionStep>,
+) -> Result<()> {
+    let rclone_config_path = write_target_rclone_config(config, host, temp_dir)?;
+    steps.push(applied_step(
+        "write_rclone_config",
+        format!("wrote temporary rclone config for {}", target.name),
+        rclone_config_path.display().to_string(),
+    ));
+
+    let filter_path = build_filter_file(config, target, temp_dir)?;
+    steps.push(applied_step(
+        "prepare_filters",
+        format!("prepared filter rules for {}", target.name),
+        filter_path.display().to_string(),
+    ));
+
+    let remote_path = format!("syncsteward-target:{}", target.remote_path);
+    let mut command = Command::new("rclone");
+    command
+        .env("RCLONE_CONFIG", &rclone_config_path)
+        .arg("sync")
+        .arg(&target.local_path)
+        .arg(&remote_path)
+        .arg("--filter-from")
+        .arg(&filter_path)
+        .arg("--skip-links")
+        .arg("--exclude")
+        .arg("*.db")
+        .arg("--exclude")
+        .arg("*.sqlite")
+        .arg("--exclude")
+        .arg("*.sqlite3")
+        .arg("--exclude")
+        .arg("*.db-journal")
+        .arg("--exclude")
+        .arg("*.db-wal")
+        .arg("--exclude")
+        .arg("*.db-shm")
+        .arg("--exclude")
+        .arg("*.sqlite-journal")
+        .arg("--exclude")
+        .arg("*.sqlite-wal")
+        .arg("--exclude")
+        .arg("*.sqlite-shm")
+        .arg("--exclude")
+        .arg("*.sqlite3-journal")
+        .arg("--exclude")
+        .arg("*.sqlite3-wal")
+        .arg("--exclude")
+        .arg("*.sqlite3-shm");
+    if dry_run {
+        command.arg("--dry-run");
+    }
+
+    let non_db_output = run_spawned_command(command);
+    if non_db_output.success {
+        steps.push(applied_step(
+            "rclone_sync_non_db",
+            format!(
+                "{} completed for non-database files in {}",
+                if dry_run {
+                    "dry run"
+                } else {
+                    "backup-only sync"
+                },
+                target.name
+            ),
+            summarize_command_output(&non_db_output),
+        ));
+    } else {
+        steps.push(failed_step(
+            "rclone_sync_non_db",
+            format!(
+                "{} failed for non-database files in {}",
+                if dry_run {
+                    "dry run"
+                } else {
+                    "backup-only sync"
+                },
+                target.name
+            ),
+            summarize_command_output(&non_db_output),
+        ));
+        return Ok(());
+    }
+
+    let snapshot_root = temp_dir.join("sqlite-snapshots");
+    fs::create_dir_all(&snapshot_root)?;
+
+    let mut snapshot_paths = Vec::new();
+    for relative_path in &snapshot_policy.sqlite_paths {
+        let source_path = target.local_path.join(relative_path);
+        if !source_path.exists() {
+            steps.push(skipped_step(
+                "sqlite_snapshot_missing",
+                format!(
+                    "skipped missing SQLite source {} for {}",
+                    relative_path.display(),
+                    target.name
+                ),
+                source_path.display().to_string(),
+            ));
+            continue;
+        }
+
+        let destination_path = snapshot_root.join(relative_path);
+        if let Some(parent) = destination_path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+
+        let backup_output = run_command(
+            "sqlite3",
+            [
+                source_path.to_string_lossy().as_ref(),
+                ".timeout 5000",
+                &format!(
+                    ".backup '{}'",
+                    sqlite_string_literal(destination_path.as_path())
+                ),
+            ],
+        );
+        if backup_output.success {
+            steps.push(applied_step(
+                "sqlite_snapshot_backup",
+                format!("created SQLite snapshot for {}", relative_path.display()),
+                destination_path.display().to_string(),
+            ));
+            snapshot_paths.push((relative_path.clone(), destination_path));
+        } else {
+            steps.push(failed_step(
+                "sqlite_snapshot_backup",
+                format!("failed to snapshot SQLite file {}", relative_path.display()),
+                summarize_command_output(&backup_output),
+            ));
+        }
+    }
+
+    if steps
+        .iter()
+        .any(|step| step.id == "sqlite_snapshot_backup" && step.status == ActionStepStatus::Failed)
+    {
+        return Ok(());
+    }
+
+    for (relative_path, snapshot_path) in snapshot_paths {
+        let remote_file = format!(
+            "syncsteward-target:{}/{}",
+            target.remote_path,
+            relative_path.to_string_lossy().replace('\\', "/")
+        );
+        let mut upload = Command::new("rclone");
+        upload
+            .env("RCLONE_CONFIG", &rclone_config_path)
+            .arg("copyto")
+            .arg(&snapshot_path)
+            .arg(&remote_file);
+        if dry_run {
+            upload.arg("--dry-run");
+        }
+        let upload_output = run_spawned_command(upload);
+        if upload_output.success {
+            steps.push(applied_step(
+                "sqlite_snapshot_upload",
+                format!("uploaded SQLite snapshot for {}", relative_path.display()),
+                summarize_command_output(&upload_output),
+            ));
+        } else {
+            steps.push(failed_step(
+                "sqlite_snapshot_upload",
+                format!(
+                    "failed to upload SQLite snapshot for {}",
+                    relative_path.display()
+                ),
+                summarize_command_output(&upload_output),
+            ));
+        }
+    }
+
+    Ok(())
+}
+
 fn write_target_rclone_config(config: &AppConfig, host: &str, temp_dir: &Path) -> Result<PathBuf> {
     let path = temp_dir.join("rclone.conf");
     let contents = format!(
@@ -959,6 +1162,17 @@ fn target_exclusion_lines(config: &AppConfig, target_name: &str) -> Vec<String> 
         .flat_map(|entry| entry.patterns.iter())
         .map(|pattern| format!("- {pattern}"))
         .collect()
+}
+
+fn target_snapshot_policy<'a>(
+    config: &'a AppConfig,
+    target_name: &str,
+) -> Option<&'a crate::config::TargetSnapshot> {
+    config
+        .policy
+        .target_snapshots
+        .iter()
+        .find(|entry| entry.target == target_name)
 }
 
 fn execute_pause(config: &AppConfig, config_source: &str, target: ActionTarget) -> ControlReport {
@@ -1862,6 +2076,10 @@ fn summarize_command_output(output: &CommandOutput) -> String {
     summary
 }
 
+fn sqlite_string_literal(path: &Path) -> String {
+    path.to_string_lossy().replace('\'', "''")
+}
+
 fn action_name(action: ControlAction) -> &'static str {
     match action {
         ControlAction::Pause => "pause",
@@ -1911,6 +2129,21 @@ where
     S: AsRef<std::ffi::OsStr>,
 {
     match Command::new(program).args(args).output() {
+        Ok(output) => CommandOutput {
+            success: output.status.success(),
+            stdout: String::from_utf8_lossy(&output.stdout).to_string(),
+            stderr: String::from_utf8_lossy(&output.stderr).to_string(),
+        },
+        Err(error) => CommandOutput {
+            success: false,
+            stdout: String::new(),
+            stderr: error.to_string(),
+        },
+    }
+}
+
+fn run_spawned_command(mut command: Command) -> CommandOutput {
+    match command.output() {
         Ok(output) => CommandOutput {
             success: output.status.success(),
             stdout: String::from_utf8_lossy(&output.stdout).to_string(),
@@ -2037,6 +2270,7 @@ path1 and path2 are out of sync, run --resync to recover\n\
                 folder_policies: Vec::new(),
                 file_class_policies: PolicyConfig::default().file_classes,
                 target_exclusions: PolicyConfig::default().target_exclusions,
+                target_snapshots: PolicyConfig::default().target_snapshots,
             },
             launch_agent: LaunchAgentStatus {
                 label: "com.example.test".to_string(),

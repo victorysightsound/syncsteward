@@ -68,6 +68,7 @@ Configuration now carries both operator paths and safety policy:
 - folder policy overrides
 - file-class policy defaults
 - target-specific exclusion rules for protected bundles and subtrees
+- target-specific snapshot rules for runtime SQLite-backed targets
 - alert thresholds and notification toggles
 
 ### Status
@@ -79,7 +80,7 @@ Status is a neutral snapshot of:
 - drift artifact counts and examples
 - acknowledged historical log baseline, if one exists
 - latest sync log summary
-- active folder, file-class, and target-exclusion policy defaults
+- active folder, file-class, target-exclusion, and target-snapshot policy defaults
 
 ### Policy Model
 
@@ -88,6 +89,7 @@ SyncSteward is folder-first, with file-class overrides for dangerous content.
 - folder policies express the normal behavior for a subtree
 - file-class policies can tighten safety for specific artifacts
 - target-specific exclusions can protect known bundle/package paths inside otherwise executable targets
+- target-specific snapshots can replace live runtime databases with staged SQLite backups during execution
 - specific path overrides will come later for rare exceptions
 
 The default dangerous-file posture is fail-safe:
@@ -104,6 +106,13 @@ The first target-specific exclusions protect native Apple libraries inside appro
 - `Music` excludes `Music Library.musiclibrary`
 
 Those bundle exclusions are enforced by SyncSteward itself so backup-only media targets do not depend only on a legacy filter file.
+
+The first target-specific snapshot rule protects `.memloft`:
+
+- SyncSteward syncs non-database files from the live tree through the existing filtered path
+- `memloft.db`, `payroll.db`, and `vault.db` are uploaded from `sqlite3 .backup` snapshots instead of the live files
+
+That keeps runtime SQLite backup coherent without forcing a full local mirror of the `.memloft` tree on every run.
 
 ### Legacy Target Inventory
 
