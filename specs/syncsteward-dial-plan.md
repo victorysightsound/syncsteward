@@ -35,6 +35,8 @@
 - add notifications for blocked sync, repeated failures, stale last-success time, and new drift artifacts
 - store sync history, health transitions, and acknowledgements
 - expose alert state in both CLI and MCP
+- ship a first local notification path for active alerts
+- refine alert deduplication and escalation after the first notification slice lands
 
 ## Phase 5: UI
 

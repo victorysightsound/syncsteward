@@ -49,6 +49,41 @@ pub struct TargetRunReport {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct AlertReport {
+    pub config_source: String,
+    pub generated_at_unix_ms: u128,
+    pub preflight_ready: bool,
+    pub stale_success_after_hours: u64,
+    pub alerts: Vec<AlertRecord>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct NotifyAlertsReport {
+    pub outcome: ActionOutcome,
+    pub summary: String,
+    pub dry_run: bool,
+    pub alerts: Vec<AlertRecord>,
+    pub steps: Vec<ActionStep>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct AlertRecord {
+    pub id: String,
+    pub severity: AlertSeverity,
+    pub summary: String,
+    pub detail: String,
+    pub target_name: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum AlertSeverity {
+    Info,
+    Warn,
+    Critical,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct SyncTargetRecord {
     pub name: String,
     pub local_path: PathBuf,

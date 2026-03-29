@@ -1,11 +1,12 @@
 use clap::{Parser, Subcommand, ValueEnum};
 use std::path::PathBuf;
 use syncsteward_core::{
-    ActionOutcome, ActionStepStatus, ActionTarget, CheckStatus, ConfigScaffoldReport,
-    ControlReport, LogAcknowledgeReport, PolicyMode, PreflightReport, StatusReport,
-    SyncTargetInventoryReport, TargetCheckReport, TargetCheckSetReport, TargetRunReport,
-    acknowledge_latest_log, check_target, check_targets, pause, preflight, resume, run_target,
-    scaffold_config, status, targets,
+    ActionOutcome, ActionStepStatus, ActionTarget, AlertReport, AlertSeverity, CheckStatus,
+    ConfigScaffoldReport, ControlReport, LogAcknowledgeReport, NotifyAlertsReport, PolicyMode,
+    PreflightReport, StatusReport, SyncTargetInventoryReport, TargetCheckReport,
+    TargetCheckSetReport, TargetRunReport, acknowledge_latest_log, alerts, check_target,
+    check_targets, notify_alerts, pause, preflight, resume, run_target, scaffold_config, status,
+    targets,
 };
 
 #[derive(Debug, Parser)]
@@ -46,6 +47,18 @@ enum Command {
     /// Explain readiness and blockers for one configured sync target.
     CheckTarget {
         target: String,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Evaluate active alerts from preflight and target run history.
+    Alerts {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Send a local notification for current alerts.
+    NotifyAlerts {
+        #[arg(long)]
+        dry_run: bool,
         #[arg(long)]
         json: bool,
     },
@@ -190,6 +203,34 @@ fn run() -> i32 {
             } else {
                 2
             }
+        }
+        Command::Alerts { json } => {
+            let report = match alerts(cli.config.as_deref()) {
+                Ok(report) => report,
+                Err(error) => return fatal_error(&error.to_string()),
+            };
+            if json {
+                if print_json(&report).is_err() {
+                    return fatal_error("failed to serialize alert report as JSON");
+                }
+            } else {
+                print_alerts(&report);
+            }
+            if report.alerts.is_empty() { 0 } else { 2 }
+        }
+        Command::NotifyAlerts { dry_run, json } => {
+            let report = match notify_alerts(cli.config.as_deref(), dry_run) {
+                Ok(report) => report,
+                Err(error) => return fatal_error(&error.to_string()),
+            };
+            if json {
+                if print_json(&report).is_err() {
+                    return fatal_error("failed to serialize notify-alerts report as JSON");
+                }
+            } else {
+                print_notify_alerts(&report);
+            }
+            action_exit_code(report.outcome)
         }
         Command::RunTarget {
             target,
@@ -512,6 +553,57 @@ fn print_run_target(report: &TargetRunReport) {
     }
 }
 
+fn print_alerts(report: &AlertReport) {
+    println!(
+        "SyncSteward Alerts: {}",
+        if report.alerts.is_empty() {
+            "CLEAR"
+        } else {
+            "ACTIVE"
+        }
+    );
+    println!("Config source: {}", report.config_source);
+    println!(
+        "Preflight ready: {}",
+        if report.preflight_ready { "yes" } else { "no" }
+    );
+    println!(
+        "Stale success threshold: {} hours",
+        report.stale_success_after_hours
+    );
+    if report.alerts.is_empty() {
+        println!("No active alerts.");
+        return;
+    }
+    for alert in &report.alerts {
+        println!(
+            "- [{}] {}",
+            describe_alert_severity(alert.severity),
+            alert.summary
+        );
+        if let Some(target_name) = &alert.target_name {
+            println!("  target: {}", target_name);
+        }
+        println!("  {}", alert.detail);
+    }
+}
+
+fn print_notify_alerts(report: &NotifyAlertsReport) {
+    println!("SyncSteward Notify Alerts: {:?}", report.outcome);
+    println!("{}", report.summary);
+    println!("Dry run: {}", if report.dry_run { "yes" } else { "no" });
+    println!("Alert count: {}", report.alerts.len());
+    for step in &report.steps {
+        println!(
+            "[{}] {}: {}",
+            describe_step_status(step.status),
+            step.id,
+            step.summary
+        );
+        println!("  {}", step.detail);
+    }
+}
+
 fn print_acknowledged_log(report: &LogAcknowledgeReport) {
     println!("SyncSteward Acknowledge Latest Log: {:?}", report.outcome);
     println!("{}", report.summary);
@@ -572,6 +664,14 @@ fn describe_step_status(status: ActionStepStatus) -> &'static str {
         ActionStepStatus::Skipped => "SKIPPED",
         ActionStepStatus::Blocked => "BLOCKED",
         ActionStepStatus::Failed => "FAILED",
+    }
+}
+
+fn describe_alert_severity(severity: AlertSeverity) -> &'static str {
+    match severity {
+        AlertSeverity::Info => "INFO",
+        AlertSeverity::Warn => "WARN",
+        AlertSeverity::Critical => "CRITICAL",
     }
 }
 

@@ -10,14 +10,14 @@ pub use config::{
 };
 pub use inventory::targets;
 pub use model::{
-    AcknowledgedLogSummary, ActionOutcome, ActionStep, ActionStepStatus, ActionTarget,
-    ArtifactReport, CheckStatus, ConfigScaffoldReport, ControlAction, ControlReport,
-    LaunchAgentStatus, LegacySyncMode, LogAcknowledgeReport, LogSummary, PolicySummary,
-    PreflightCheck, PreflightReport, RemoteStatus, ServiceState, StatusReport,
-    SyncTargetInventoryReport, SyncTargetRecord, TargetBlocker, TargetCheckReport,
+    AcknowledgedLogSummary, ActionOutcome, ActionStep, ActionStepStatus, ActionTarget, AlertRecord,
+    AlertReport, AlertSeverity, ArtifactReport, CheckStatus, ConfigScaffoldReport, ControlAction,
+    ControlReport, LaunchAgentStatus, LegacySyncMode, LogAcknowledgeReport, LogSummary,
+    NotifyAlertsReport, PolicySummary, PreflightCheck, PreflightReport, RemoteStatus, ServiceState,
+    StatusReport, SyncTargetInventoryReport, SyncTargetRecord, TargetBlocker, TargetCheckReport,
     TargetCheckSetReport, TargetEvaluation, TargetRunReport,
 };
 pub use probe::{
-    acknowledge_latest_log, check_target, check_targets, pause, preflight, resume, run_target,
-    scaffold_config, status,
+    acknowledge_latest_log, alerts, check_target, check_targets, notify_alerts, pause, preflight,
+    resume, run_target, scaffold_config, status,
 };

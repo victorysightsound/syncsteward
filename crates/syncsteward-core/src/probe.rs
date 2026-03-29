@@ -1,11 +1,11 @@
 use crate::config::{AppConfig, FolderPolicy, default_config_path, expand_path, load_config};
 use crate::inventory::build_target_inventory;
 use crate::model::{
-    ActionOutcome, ActionStep, ActionStepStatus, ActionTarget, ArtifactReport, CheckStatus,
-    ConfigScaffoldReport, ControlAction, ControlReport, LaunchAgentStatus, LogAcknowledgeReport,
-    LogSummary, PolicySummary, PreflightCheck, PreflightReport, RemoteStatus, ServiceState,
-    StatusReport, TargetBlocker, TargetCheckReport, TargetCheckSetReport, TargetEvaluation,
-    TargetRunReport,
+    ActionOutcome, ActionStep, ActionStepStatus, ActionTarget, AlertRecord, AlertReport,
+    AlertSeverity, ArtifactReport, CheckStatus, ConfigScaffoldReport, ControlAction, ControlReport,
+    LaunchAgentStatus, LogAcknowledgeReport, LogSummary, NotifyAlertsReport, PolicySummary,
+    PreflightCheck, PreflightReport, RemoteStatus, ServiceState, StatusReport, TargetBlocker,
+    TargetCheckReport, TargetCheckSetReport, TargetEvaluation, TargetRunReport,
 };
 use crate::state::{
     TargetRunState, load_state, matches_acknowledged_log, save_acknowledged_log, save_target_run,
@@ -28,6 +28,113 @@ pub fn preflight(config_path: Option<&Path>) -> Result<PreflightReport> {
     let loaded = load_config(config_path)?;
     let status = collect_status(&loaded.config, loaded.source.description());
     Ok(evaluate_preflight(status))
+}
+
+pub fn alerts(config_path: Option<&Path>) -> Result<AlertReport> {
+    let loaded = load_config(config_path)?;
+    let report = evaluate_alerts(&loaded.config, loaded.source.description())?;
+    Ok(report)
+}
+
+pub fn notify_alerts(config_path: Option<&Path>, dry_run: bool) -> Result<NotifyAlertsReport> {
+    let loaded = load_config(config_path)?;
+    let report = evaluate_alerts(&loaded.config, loaded.source.description())?;
+    let mut steps = Vec::new();
+
+    if report.alerts.is_empty() {
+        steps.push(skipped_step(
+            "alerts_snapshot",
+            "no active alerts to notify".to_string(),
+            "alert evaluation returned no active issues".to_string(),
+        ));
+        return Ok(NotifyAlertsReport {
+            outcome: ActionOutcome::NoOp,
+            summary: "no active alerts".to_string(),
+            dry_run,
+            alerts: report.alerts,
+            steps,
+        });
+    }
+
+    let summary = summarize_alerts_notification(&report.alerts);
+    if !loaded.config.alerts.enable_macos_notifications {
+        steps.push(skipped_step(
+            "macos_notifications",
+            "macOS notifications are disabled in config".to_string(),
+            summary.clone(),
+        ));
+        return Ok(NotifyAlertsReport {
+            outcome: ActionOutcome::NoOp,
+            summary: "notifications are disabled".to_string(),
+            dry_run,
+            alerts: report.alerts,
+            steps,
+        });
+    }
+
+    if dry_run {
+        steps.push(applied_step(
+            "macos_notifications",
+            "dry run prepared a macOS notification".to_string(),
+            summary.clone(),
+        ));
+        return Ok(NotifyAlertsReport {
+            outcome: ActionOutcome::Success,
+            summary: format!("dry run would notify {} active alerts", report.alerts.len()),
+            dry_run,
+            alerts: report.alerts,
+            steps,
+        });
+    }
+
+    let output = run_command(
+        "osascript",
+        [
+            "-e",
+            format!(
+                "display notification {} with title {} subtitle {}",
+                apple_script_string(&summary),
+                apple_script_string("SyncSteward"),
+                apple_script_string(&format!(
+                    "{} active alert{}",
+                    report.alerts.len(),
+                    if report.alerts.len() == 1 { "" } else { "s" }
+                )),
+            )
+            .as_str(),
+        ],
+    );
+
+    if output.success {
+        steps.push(applied_step(
+            "macos_notifications",
+            "sent a macOS notification".to_string(),
+            summary.clone(),
+        ));
+        Ok(NotifyAlertsReport {
+            outcome: ActionOutcome::Success,
+            summary: format!(
+                "sent notification for {} active alerts",
+                report.alerts.len()
+            ),
+            dry_run,
+            alerts: report.alerts,
+            steps,
+        })
+    } else {
+        steps.push(failed_step(
+            "macos_notifications",
+            "failed to send a macOS notification".to_string(),
+            summarize_command_output(&output),
+        ));
+        Ok(NotifyAlertsReport {
+            outcome: ActionOutcome::Failed,
+            summary: "failed to send notification".to_string(),
+            dry_run,
+            alerts: report.alerts,
+            steps,
+        })
+    }
 }
 
 pub fn check_targets(config_path: Option<&Path>) -> Result<TargetCheckSetReport> {
@@ -540,6 +647,111 @@ fn evaluate_target(
     }
 }
 
+fn evaluate_alerts(config: &AppConfig, config_source: String) -> Result<AlertReport> {
+    let status = collect_status(config, config_source.clone());
+    let preflight = evaluate_preflight(status);
+    let inventory = build_target_inventory(config, config_source.clone())?;
+    let state = load_state(&config.state_path)?;
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    let stale_after_ms = (config.alerts.stale_success_after_hours as u128) * 60 * 60 * 1000;
+
+    let mut alerts = Vec::new();
+
+    for check in &preflight.checks {
+        if check.status == CheckStatus::Fail {
+            alerts.push(AlertRecord {
+                id: format!("preflight_{}", check.id),
+                severity: AlertSeverity::Critical,
+                summary: check.summary.clone(),
+                detail: check.detail.clone(),
+                target_name: None,
+            });
+        }
+    }
+
+    for target in inventory.targets {
+        let evaluation = evaluate_target(&preflight, target);
+        if evaluation.effective_mode != crate::config::PolicyMode::BackupOnly {
+            continue;
+        }
+
+        if !evaluation.ready {
+            alerts.push(AlertRecord {
+                id: format!("target_{}_blocked", evaluation.target.name),
+                severity: AlertSeverity::Warn,
+                summary: format!("{} cannot run yet", evaluation.target.name),
+                detail: format_target_blockers(&evaluation.blockers),
+                target_name: Some(evaluation.target.name.clone()),
+            });
+            continue;
+        }
+
+        let Some(run_state) = state.target_runs.get(&evaluation.target.name) else {
+            alerts.push(AlertRecord {
+                id: format!("target_{}_never_ran", evaluation.target.name),
+                severity: AlertSeverity::Warn,
+                summary: format!("{} has no recorded run history", evaluation.target.name),
+                detail: "run-target has not completed for this executable target yet".to_string(),
+                target_name: Some(evaluation.target.name.clone()),
+            });
+            continue;
+        };
+
+        if run_state.outcome != ActionOutcome::Success {
+            alerts.push(AlertRecord {
+                id: format!("target_{}_last_run_failed", evaluation.target.name),
+                severity: AlertSeverity::Warn,
+                summary: format!(
+                    "{} last completed with {:?}",
+                    evaluation.target.name, run_state.outcome
+                ),
+                detail: run_state.summary.clone(),
+                target_name: Some(evaluation.target.name.clone()),
+            });
+            continue;
+        }
+
+        let Some(last_success_at) = run_state.last_success_at_unix_ms else {
+            alerts.push(AlertRecord {
+                id: format!("target_{}_no_live_success", evaluation.target.name),
+                severity: AlertSeverity::Warn,
+                summary: format!("{} has no non-dry-run success yet", evaluation.target.name),
+                detail: "dry runs do not count as completed backups for stale-success tracking"
+                    .to_string(),
+                target_name: Some(evaluation.target.name.clone()),
+            });
+            continue;
+        };
+
+        if now.saturating_sub(last_success_at) > stale_after_ms {
+            alerts.push(AlertRecord {
+                id: format!("target_{}_stale_success", evaluation.target.name),
+                severity: AlertSeverity::Warn,
+                summary: format!(
+                    "{} has not completed a successful live run in {} hours",
+                    evaluation.target.name, config.alerts.stale_success_after_hours
+                ),
+                detail: format!(
+                    "last successful live run recorded at unix_ms {}",
+                    last_success_at
+                ),
+                target_name: Some(evaluation.target.name.clone()),
+            });
+        }
+    }
+
+    Ok(AlertReport {
+        config_source,
+        generated_at_unix_ms: now,
+        preflight_ready: preflight.ready,
+        stale_success_after_hours: config.alerts.stale_success_after_hours,
+        alerts,
+    })
+}
+
 struct LegacyLockGuard {
     path: PathBuf,
 }
@@ -982,6 +1194,10 @@ fn record_audit_event(config: &AppConfig, report: &mut ControlReport) {
 }
 
 fn record_target_run(config: &AppConfig, report: &TargetRunReport) {
+    let finished_at_unix_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
     if let Err(error) = append_target_run_audit(&config.audit_log_path, report) {
         eprintln!("syncsteward: failed to append target run audit: {error}");
     }
@@ -992,10 +1208,12 @@ fn record_target_run(config: &AppConfig, report: &TargetRunReport) {
         effective_mode: report.evaluation.effective_mode,
         outcome: report.outcome,
         dry_run: report.dry_run,
-        finished_at_unix_ms: SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis(),
+        finished_at_unix_ms,
+        last_success_at_unix_ms: if report.outcome == ActionOutcome::Success && !report.dry_run {
+            Some(finished_at_unix_ms)
+        } else {
+            None
+        },
         summary: report.summary.clone(),
     };
 
@@ -1571,6 +1789,18 @@ fn format_target_blockers(blockers: &[TargetBlocker]) -> String {
     }
 }
 
+fn summarize_alerts_notification(alerts: &[AlertRecord]) -> String {
+    let mut items = alerts
+        .iter()
+        .take(3)
+        .map(|alert| alert.summary.clone())
+        .collect::<Vec<_>>();
+    if alerts.len() > 3 {
+        items.push(format!("and {} more", alerts.len() - 3));
+    }
+    items.join("; ")
+}
+
 fn format_examples(examples: &[PathBuf]) -> String {
     if examples.is_empty() {
         "no example paths recorded".to_string()
@@ -1581,6 +1811,10 @@ fn format_examples(examples: &[PathBuf]) -> String {
             .collect::<Vec<_>>()
             .join("; ")
     }
+}
+
+fn apple_script_string(value: &str) -> String {
+    format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""))
 }
 
 fn summarize_command_output(output: &CommandOutput) -> String {

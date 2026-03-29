@@ -67,6 +67,7 @@ Configuration now carries both operator paths and safety policy:
 - scan roots
 - folder policy overrides
 - file-class policy defaults
+- alert thresholds and notification toggles
 
 ### Status
 
@@ -144,6 +145,13 @@ The next execution layer is also explicit and fail-safe:
 - the first executable slice is limited to `backup_only` targets
 - execution must respect the legacy sync lock so manual runs cannot overlap the old script
 - every target run should append audit history and record last outcome in state
+
+Monitoring should build on the same state model rather than inventing a separate tracker:
+
+- active alerts should derive from current preflight plus per-target run history
+- executable targets without any successful live run should surface as alerts
+- stale-success thresholds should be configurable
+- local notifications should summarize active alerts without hiding the underlying details
 
 ## Planned Waves
 

@@ -25,6 +25,8 @@ pub struct AppConfig {
     pub remote: RemoteConfig,
     pub scan: ScanConfig,
     #[serde(default)]
+    pub alerts: AlertConfig,
+    #[serde(default)]
     pub policy: PolicyConfig,
 }
 
@@ -39,6 +41,14 @@ pub struct RemoteConfig {
 pub struct ScanConfig {
     pub roots: Vec<PathBuf>,
     pub max_examples: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct AlertConfig {
+    #[serde(default = "default_stale_success_after_hours")]
+    pub stale_success_after_hours: u64,
+    #[serde(default = "default_enable_macos_notifications")]
+    pub enable_macos_notifications: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -88,6 +98,15 @@ impl Default for PolicyConfig {
         Self {
             folders: Vec::new(),
             file_classes: default_file_class_policies(),
+        }
+    }
+}
+
+impl Default for AlertConfig {
+    fn default() -> Self {
+        Self {
+            stale_success_after_hours: default_stale_success_after_hours(),
+            enable_macos_notifications: default_enable_macos_notifications(),
         }
     }
 }
@@ -142,6 +161,7 @@ impl Default for AppConfig {
                 ],
                 max_examples: 20,
             },
+            alerts: AlertConfig::default(),
             policy: PolicyConfig::default(),
         }
     }
@@ -165,6 +185,14 @@ fn default_memloft_filter_path() -> PathBuf {
 
 fn default_legacy_lock_path() -> PathBuf {
     PathBuf::from("/tmp/cloud-sync.lock")
+}
+
+fn default_stale_success_after_hours() -> u64 {
+    24
+}
+
+fn default_enable_macos_notifications() -> bool {
+    true
 }
 
 fn default_file_class_policies() -> Vec<FileClassPolicy> {
@@ -282,6 +310,9 @@ fn normalize_config(mut config: AppConfig) -> Result<AppConfig> {
     }
     if config.remote.onedrive_service.trim().is_empty() {
         bail!("remote.onedrive_service must not be empty");
+    }
+    if config.alerts.stale_success_after_hours == 0 {
+        bail!("alerts.stale_success_after_hours must be greater than zero");
     }
     if config.scan.max_examples == 0 {
         bail!("scan.max_examples must be greater than zero");

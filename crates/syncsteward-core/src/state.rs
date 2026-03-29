@@ -23,6 +23,7 @@ pub struct TargetRunState {
     pub outcome: ActionOutcome,
     pub dry_run: bool,
     pub finished_at_unix_ms: u128,
+    pub last_success_at_unix_ms: Option<u128>,
     pub summary: String,
 }
 
@@ -63,6 +64,12 @@ pub fn save_acknowledged_log(path: &Path, log: &LogSummary) -> Result<Acknowledg
 
 pub fn save_target_run(path: &Path, target_name: &str, run: TargetRunState) -> Result<()> {
     let mut state = load_state(path)?;
+    let mut run = run;
+    if let Some(existing) = state.target_runs.get(target_name) {
+        if run.last_success_at_unix_ms.is_none() {
+            run.last_success_at_unix_ms = existing.last_success_at_unix_ms;
+        }
+    }
     state.target_runs.insert(target_name.to_string(), run);
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;

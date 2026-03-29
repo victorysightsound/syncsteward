@@ -127,6 +127,51 @@ Supports:
 - human output
 - JSON output
 
+### `syncsteward alerts`
+
+Evaluate active alerts from current preflight state and per-target run history.
+
+Outputs:
+
+- generated timestamp
+- overall preflight readiness
+- stale-success threshold
+- active alerts with severity, summary, detail, and target context
+
+Rules:
+
+- executable `backup_only` targets with no live success should alert
+- executable targets with no run history should alert
+- executable targets whose last live success is stale should alert
+- global preflight failures should surface as critical alerts
+
+Supports:
+
+- human output
+- JSON output
+
+### `syncsteward notify-alerts`
+
+Send a local notification that summarizes the current alert set.
+
+Outputs:
+
+- notification outcome
+- active alerts included in the notification
+- structured notification steps
+
+Rules:
+
+- no-op when there are no active alerts
+- respects the config toggle for macOS notifications
+- supports dry-run for validation
+
+Supports:
+
+- `--dry-run`
+- human output
+- JSON output
+
 ### `syncsteward acknowledge-latest-log`
 
 Record the current latest `rclone` log as an acknowledged historical baseline after cleanup.
@@ -236,6 +281,14 @@ Read the same single-target readiness and blocker view exposed by the CLI.
 
 Run the same guarded single-target execution path exposed by the CLI, including dry-run support.
 
+### `alerts`
+
+Read the same alert evaluation surface exposed by the CLI.
+
+### `notify_alerts`
+
+Send the same guarded local alert notification exposed by the CLI, including dry-run support.
+
 ### `acknowledge_latest_log`
 
 Record the same historical-log baseline acknowledgement exposed by the CLI.
@@ -254,9 +307,8 @@ Run the same guarded resume actions exposed by the CLI.
 
 ## Deferred Surface
 
-Not part of the first slice:
+Deferred for later waves:
 
 - folder policy editing
 - conflict quarantine moves
-- notifications
 - UI

@@ -9,12 +9,13 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use std::path::PathBuf;
 use syncsteward_core::{
-    ActionTarget, ConfigScaffoldReport, ControlReport, LogAcknowledgeReport, PreflightReport,
-    StatusReport, SyncTargetInventoryReport, TargetCheckReport, TargetCheckSetReport,
-    TargetRunReport, acknowledge_latest_log as core_acknowledge_latest_log,
-    check_target as core_check_target, check_targets as core_check_targets, pause, preflight,
-    resume, run_target as core_run_target, scaffold_config as core_scaffold_config, status,
-    targets,
+    ActionTarget, AlertReport, ConfigScaffoldReport, ControlReport, LogAcknowledgeReport,
+    NotifyAlertsReport, PreflightReport, StatusReport, SyncTargetInventoryReport,
+    TargetCheckReport, TargetCheckSetReport, TargetRunReport,
+    acknowledge_latest_log as core_acknowledge_latest_log, alerts as core_alerts,
+    check_target as core_check_target, check_targets as core_check_targets,
+    notify_alerts as core_notify_alerts, pause, preflight, resume, run_target as core_run_target,
+    scaffold_config as core_scaffold_config, status, targets,
 };
 
 type McpResult<T> = Result<Json<T>, String>;
@@ -27,6 +28,12 @@ struct TargetSelectorRequest {
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 struct RunTargetRequest {
     target: String,
+    #[serde(default)]
+    dry_run: bool,
+}
+
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+struct DryRunRequest {
     #[serde(default)]
     dry_run: bool,
 }
@@ -116,6 +123,35 @@ impl SyncStewardMcpServer {
         let config_path = self.config_path.clone();
         let report = tokio::task::spawn_blocking(move || {
             core_check_target(config_path.as_deref(), &request.target)
+        })
+        .await
+        .map_err(|error| error.to_string())?
+        .map_err(|error| error.to_string())?;
+        Ok(Json(report))
+    }
+
+    #[tool(
+        description = "Evaluate active alerts from current preflight state and per-target run history."
+    )]
+    async fn alerts(&self) -> McpResult<AlertReport> {
+        let config_path = self.config_path.clone();
+        let report = tokio::task::spawn_blocking(move || core_alerts(config_path.as_deref()))
+            .await
+            .map_err(|error| error.to_string())?
+            .map_err(|error| error.to_string())?;
+        Ok(Json(report))
+    }
+
+    #[tool(
+        description = "Send a local notification summarizing current SyncSteward alerts. Supports dry-run mode."
+    )]
+    async fn notify_alerts(
+        &self,
+        Parameters(request): Parameters<DryRunRequest>,
+    ) -> McpResult<NotifyAlertsReport> {
+        let config_path = self.config_path.clone();
+        let report = tokio::task::spawn_blocking(move || {
+            core_notify_alerts(config_path.as_deref(), request.dry_run)
         })
         .await
         .map_err(|error| error.to_string())?
