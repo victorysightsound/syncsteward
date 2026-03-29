@@ -3,8 +3,9 @@ use std::path::PathBuf;
 use syncsteward_core::{
     ActionOutcome, ActionStepStatus, ActionTarget, CheckStatus, ConfigScaffoldReport,
     ControlReport, LogAcknowledgeReport, PolicyMode, PreflightReport, StatusReport,
-    SyncTargetInventoryReport, TargetCheckReport, TargetCheckSetReport, acknowledge_latest_log,
-    check_target, check_targets, pause, preflight, resume, scaffold_config, status, targets,
+    SyncTargetInventoryReport, TargetCheckReport, TargetCheckSetReport, TargetRunReport,
+    acknowledge_latest_log, check_target, check_targets, pause, preflight, resume, run_target,
+    scaffold_config, status, targets,
 };
 
 #[derive(Debug, Parser)]
@@ -45,6 +46,14 @@ enum Command {
     /// Explain readiness and blockers for one configured sync target.
     CheckTarget {
         target: String,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Run one approved target with preflight and policy gating.
+    RunTarget {
+        target: String,
+        #[arg(long)]
+        dry_run: bool,
         #[arg(long)]
         json: bool,
     },
@@ -181,6 +190,24 @@ fn run() -> i32 {
             } else {
                 2
             }
+        }
+        Command::RunTarget {
+            target,
+            dry_run,
+            json,
+        } => {
+            let report = match run_target(cli.config.as_deref(), &target, dry_run) {
+                Ok(report) => report,
+                Err(error) => return fatal_error(&error.to_string()),
+            };
+            if json {
+                if print_json(&report).is_err() {
+                    return fatal_error("failed to serialize target run report as JSON");
+                }
+            } else {
+                print_run_target(&report);
+            }
+            action_exit_code(report.outcome)
         }
         Command::AcknowledgeLatestLog { json } => {
             let report = match acknowledge_latest_log(cli.config.as_deref()) {
@@ -459,6 +486,29 @@ fn print_target_evaluation(evaluation: &syncsteward_core::TargetEvaluation) {
             println!("    {}: {}", blocker.id, blocker.summary);
             println!("      {}", blocker.detail);
         }
+    }
+}
+
+fn print_run_target(report: &TargetRunReport) {
+    println!("SyncSteward Target Run: {:?}", report.outcome);
+    println!("{}", report.summary);
+    println!("Config source: {}", report.config_source);
+    println!("Selector: {}", report.selector);
+    println!("Dry run: {}", if report.dry_run { "yes" } else { "no" });
+    println!(
+        "Preflight ready: {}",
+        if report.preflight_ready { "yes" } else { "no" }
+    );
+    print_target_evaluation(&report.evaluation);
+    println!("  execution steps:");
+    for step in &report.steps {
+        println!(
+            "    [{}] {}: {}",
+            describe_step_status(step.status),
+            step.id,
+            step.summary
+        );
+        println!("      {}", step.detail);
     }
 }
 

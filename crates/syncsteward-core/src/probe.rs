@@ -5,8 +5,11 @@ use crate::model::{
     ConfigScaffoldReport, ControlAction, ControlReport, LaunchAgentStatus, LogAcknowledgeReport,
     LogSummary, PolicySummary, PreflightCheck, PreflightReport, RemoteStatus, ServiceState,
     StatusReport, TargetBlocker, TargetCheckReport, TargetCheckSetReport, TargetEvaluation,
+    TargetRunReport,
 };
-use crate::state::{load_state, matches_acknowledged_log, save_acknowledged_log};
+use crate::state::{
+    TargetRunState, load_state, matches_acknowledged_log, save_acknowledged_log, save_target_run,
+};
 use anyhow::{Result, anyhow};
 use serde::Serialize;
 use std::fs::{self, OpenOptions};
@@ -61,6 +64,186 @@ pub fn check_target(config_path: Option<&Path>, selector: &str) -> Result<Target
         preflight_ready: preflight.ready,
         evaluation: evaluate_target(&preflight, target),
     })
+}
+
+pub fn run_target(
+    config_path: Option<&Path>,
+    selector: &str,
+    dry_run: bool,
+) -> Result<TargetRunReport> {
+    let loaded = load_config(config_path)?;
+    let preflight = evaluate_preflight(collect_status(&loaded.config, loaded.source.description()));
+    let inventory = build_target_inventory(&loaded.config, loaded.source.description())?;
+    let selector_path = expand_path(Path::new(selector));
+    let target = inventory
+        .targets
+        .into_iter()
+        .find(|target| target.name == selector || target.local_path == selector_path)
+        .ok_or_else(|| anyhow!("no sync target matched selector {selector}"))?;
+    let evaluation = evaluate_target(&preflight, target);
+    let mut steps = Vec::new();
+
+    if !preflight.ready {
+        steps.push(blocked_step(
+            "preflight_gate",
+            "target execution blocked by global preflight failures".to_string(),
+            failed_check_ids(&preflight),
+        ));
+    }
+
+    if !evaluation.ready {
+        steps.push(blocked_step(
+            "target_gate",
+            format!("target {} is not ready to run", evaluation.target.name),
+            format_target_blockers(&evaluation.blockers),
+        ));
+    }
+
+    if evaluation.effective_mode != crate::config::PolicyMode::BackupOnly {
+        steps.push(blocked_step(
+            "execution_mode_unsupported",
+            format!(
+                "{} is configured as {}",
+                evaluation.target.name,
+                describe_policy_mode(evaluation.effective_mode)
+            ),
+            "folder-scoped execution currently supports backup-only targets only".to_string(),
+        ));
+    }
+
+    if !evaluation.target.local_path.is_dir() {
+        steps.push(blocked_step(
+            "local_path_not_directory",
+            format!(
+                "{} is not a directory",
+                evaluation.target.local_path.display()
+            ),
+            "folder-scoped execution currently expects directory targets".to_string(),
+        ));
+    }
+
+    if !steps.is_empty() {
+        let outcome = ActionOutcome::Blocked;
+        let summary = format!(
+            "{} blocked for {}",
+            if dry_run { "dry run" } else { "run" },
+            evaluation.target.name
+        );
+        let report = TargetRunReport {
+            config_source: loaded.source.description(),
+            selector: selector.to_string(),
+            dry_run,
+            outcome,
+            summary,
+            preflight_ready: preflight.ready,
+            evaluation: evaluation.clone(),
+            steps,
+        };
+        record_target_run(&loaded.config, &report);
+        return Ok(report);
+    }
+
+    let mut acquired_lock = None;
+    steps.push(acquire_legacy_lock(&loaded.config, &mut acquired_lock)?);
+    if steps
+        .last()
+        .is_some_and(|step| step.status == ActionStepStatus::Blocked)
+    {
+        let report = TargetRunReport {
+            config_source: loaded.source.description(),
+            selector: selector.to_string(),
+            dry_run,
+            outcome: ActionOutcome::Blocked,
+            summary: format!(
+                "{} blocked for {}",
+                if dry_run { "dry run" } else { "run" },
+                evaluation.target.name
+            ),
+            preflight_ready: preflight.ready,
+            evaluation: evaluation.clone(),
+            steps,
+        };
+        record_target_run(&loaded.config, &report);
+        return Ok(report);
+    }
+
+    let Some(host) = probe_remote_service(&loaded.config).selected_host else {
+        steps.push(failed_step(
+            "select_remote_host",
+            "no reachable remote host was available".to_string(),
+            "could not establish an SSH-backed rclone target".to_string(),
+        ));
+        let report = TargetRunReport {
+            config_source: loaded.source.description(),
+            selector: selector.to_string(),
+            dry_run,
+            outcome: ActionOutcome::Failed,
+            summary: format!(
+                "{} failed for {}",
+                if dry_run { "dry run" } else { "run" },
+                evaluation.target.name
+            ),
+            preflight_ready: preflight.ready,
+            evaluation: evaluation.clone(),
+            steps,
+        };
+        record_target_run(&loaded.config, &report);
+        return Ok(report);
+    };
+    steps.push(applied_step(
+        "select_remote_host",
+        format!("selected remote host {}", host),
+        format!("using {} for {}", host, evaluation.target.remote_path),
+    ));
+
+    let temp_dir = make_temp_workdir(&evaluation.target.name)?;
+    let result = execute_backup_only_target(
+        &loaded.config,
+        &evaluation.target,
+        &host,
+        dry_run,
+        &temp_dir,
+        &mut steps,
+    );
+    let cleanup_result = fs::remove_dir_all(&temp_dir);
+    drop(acquired_lock);
+    if let Err(error) = cleanup_result {
+        steps.push(failed_step(
+            "cleanup_temp_workdir",
+            format!("failed to remove {}", temp_dir.display()),
+            error.to_string(),
+        ));
+    }
+
+    let outcome = match result {
+        Ok(()) => summarize_run_outcome(&steps),
+        Err(error) => {
+            steps.push(failed_step(
+                "execute_target",
+                format!(
+                    "{} failed for {}",
+                    if dry_run { "dry run" } else { "run" },
+                    evaluation.target.name
+                ),
+                error.to_string(),
+            ));
+            summarize_run_outcome(&steps)
+        }
+    };
+
+    let summary = summarize_target_run(&evaluation.target.name, dry_run, outcome, &steps);
+    let report = TargetRunReport {
+        config_source: loaded.source.description(),
+        selector: selector.to_string(),
+        dry_run,
+        outcome,
+        summary,
+        preflight_ready: preflight.ready,
+        evaluation,
+        steps,
+    };
+    record_target_run(&loaded.config, &report);
+    Ok(report)
 }
 
 pub fn pause(config_path: Option<&Path>, target: ActionTarget) -> Result<ControlReport> {
@@ -357,6 +540,193 @@ fn evaluate_target(
     }
 }
 
+struct LegacyLockGuard {
+    path: PathBuf,
+}
+
+impl Drop for LegacyLockGuard {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.path);
+    }
+}
+
+fn acquire_legacy_lock(
+    config: &AppConfig,
+    slot: &mut Option<LegacyLockGuard>,
+) -> Result<ActionStep> {
+    let lock_path = &config.legacy_lock_path;
+    if let Some(parent) = lock_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+
+    if lock_path.exists() {
+        let pid = fs::read_to_string(lock_path)
+            .unwrap_or_default()
+            .trim()
+            .to_string();
+        if !pid.is_empty() {
+            let running = run_command("ps", ["-p", pid.as_str()]);
+            if running.success {
+                return Ok(blocked_step(
+                    "legacy_lock",
+                    format!(
+                        "legacy sync lock is still active at {}",
+                        lock_path.display()
+                    ),
+                    format!("process {} still owns the legacy sync lock", pid),
+                ));
+            }
+        }
+        let _ = fs::remove_file(lock_path);
+    }
+
+    fs::write(lock_path, std::process::id().to_string())?;
+    *slot = Some(LegacyLockGuard {
+        path: lock_path.clone(),
+    });
+
+    Ok(applied_step(
+        "legacy_lock",
+        format!("acquired legacy sync lock {}", lock_path.display()),
+        "single-target execution is now protected from concurrent legacy runs".to_string(),
+    ))
+}
+
+fn make_temp_workdir(target_name: &str) -> Result<PathBuf> {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    let safe_name = target_name.replace('/', "_").replace(' ', "_");
+    let path = std::env::temp_dir().join(format!("syncsteward-{}-{}", safe_name, now));
+    fs::create_dir_all(&path)?;
+    Ok(path)
+}
+
+fn execute_backup_only_target(
+    config: &AppConfig,
+    target: &crate::model::SyncTargetRecord,
+    host: &str,
+    dry_run: bool,
+    temp_dir: &Path,
+    steps: &mut Vec<ActionStep>,
+) -> Result<()> {
+    let rclone_config_path = write_target_rclone_config(config, host, temp_dir)?;
+    steps.push(applied_step(
+        "write_rclone_config",
+        format!("wrote temporary rclone config for {}", target.name),
+        rclone_config_path.display().to_string(),
+    ));
+
+    let filter_path = build_filter_file(config, target, temp_dir)?;
+    steps.push(applied_step(
+        "prepare_filters",
+        format!("prepared filter rules for {}", target.name),
+        filter_path.display().to_string(),
+    ));
+
+    let remote_path = format!("syncsteward-target:{}", target.remote_path);
+    let mut command = Command::new("rclone");
+    command
+        .env("RCLONE_CONFIG", &rclone_config_path)
+        .arg("sync")
+        .arg(&target.local_path)
+        .arg(&remote_path)
+        .arg("--filter-from")
+        .arg(&filter_path)
+        .arg("--skip-links")
+        .arg("--exclude")
+        .arg("*.db-journal")
+        .arg("--exclude")
+        .arg("*.db-wal")
+        .arg("--exclude")
+        .arg("*.db-shm");
+    if dry_run {
+        command.arg("--dry-run");
+    }
+
+    let output = match command.output() {
+        Ok(output) => CommandOutput {
+            success: output.status.success(),
+            stdout: String::from_utf8_lossy(&output.stdout).to_string(),
+            stderr: String::from_utf8_lossy(&output.stderr).to_string(),
+        },
+        Err(error) => CommandOutput {
+            success: false,
+            stdout: String::new(),
+            stderr: error.to_string(),
+        },
+    };
+
+    if output.success {
+        steps.push(applied_step(
+            "rclone_sync",
+            format!(
+                "{} completed for {}",
+                if dry_run {
+                    "dry run"
+                } else {
+                    "backup-only sync"
+                },
+                target.name
+            ),
+            summarize_command_output(&output),
+        ));
+        Ok(())
+    } else {
+        steps.push(failed_step(
+            "rclone_sync",
+            format!(
+                "{} failed for {}",
+                if dry_run {
+                    "dry run"
+                } else {
+                    "backup-only sync"
+                },
+                target.name
+            ),
+            summarize_command_output(&output),
+        ));
+        Ok(())
+    }
+}
+
+fn write_target_rclone_config(config: &AppConfig, host: &str, temp_dir: &Path) -> Result<PathBuf> {
+    let path = temp_dir.join("rclone.conf");
+    let contents = format!(
+        "[syncsteward-target]\n\
+type = sftp\n\
+host = {host}\n\
+port = 22\n\
+user = {user}\n\
+key_file = {key}\n\
+shell_type = unix\n\
+md5sum_command = md5sum\n\
+sha1sum_command = sha1sum\n",
+        user = config.remote.ssh_user,
+        key = config.ssh_key_path.display()
+    );
+    fs::write(&path, contents)?;
+    Ok(path)
+}
+
+fn build_filter_file(
+    config: &AppConfig,
+    target: &crate::model::SyncTargetRecord,
+    temp_dir: &Path,
+) -> Result<PathBuf> {
+    if target.name != ".memloft" {
+        return Ok(config.sync_filter_path.clone());
+    }
+
+    let base = fs::read_to_string(&config.sync_filter_path)?;
+    let memloft = fs::read_to_string(&config.memloft_filter_path)?;
+    let merged_path = temp_dir.join("filters.txt");
+    let merged = format!("{}\n{}", base.trim_end(), memloft);
+    fs::write(&merged_path, merged)?;
+    Ok(merged_path)
+}
+
 fn execute_pause(config: &AppConfig, config_source: &str, target: ActionTarget) -> ControlReport {
     let mut steps = Vec::new();
 
@@ -611,6 +981,29 @@ fn record_audit_event(config: &AppConfig, report: &mut ControlReport) {
     }
 }
 
+fn record_target_run(config: &AppConfig, report: &TargetRunReport) {
+    if let Err(error) = append_target_run_audit(&config.audit_log_path, report) {
+        eprintln!("syncsteward: failed to append target run audit: {error}");
+    }
+
+    let state = TargetRunState {
+        target_name: report.evaluation.target.name.clone(),
+        local_path: report.evaluation.target.local_path.clone(),
+        effective_mode: report.evaluation.effective_mode,
+        outcome: report.outcome,
+        dry_run: report.dry_run,
+        finished_at_unix_ms: SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis(),
+        summary: report.summary.clone(),
+    };
+
+    if let Err(error) = save_target_run(&config.state_path, &report.evaluation.target.name, state) {
+        eprintln!("syncsteward: failed to record target run state: {error}");
+    }
+}
+
 fn append_audit_record(path: &Path, report: &ControlReport) -> Result<()> {
     #[derive(Serialize)]
     struct AuditRecord<'a> {
@@ -656,6 +1049,58 @@ fn append_audit_record(path: &Path, report: &ControlReport) -> Result<()> {
         outcome: report.outcome,
         summary: &report.summary,
         blocked_check_ids,
+        step_ids,
+    };
+
+    let mut file = OpenOptions::new().create(true).append(true).open(path)?;
+    writeln!(file, "{}", serde_json::to_string(&record)?)?;
+    Ok(())
+}
+
+fn append_target_run_audit(path: &Path, report: &TargetRunReport) -> Result<()> {
+    #[derive(Serialize)]
+    struct TargetRunAuditRecord<'a> {
+        timestamp_unix_ms: u128,
+        kind: &'static str,
+        selector: &'a str,
+        target_name: &'a str,
+        dry_run: bool,
+        outcome: ActionOutcome,
+        summary: &'a str,
+        effective_mode: crate::config::PolicyMode,
+        blocker_ids: Vec<&'a str>,
+        step_ids: Vec<&'a str>,
+    }
+
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+
+    let blocker_ids = report
+        .evaluation
+        .blockers
+        .iter()
+        .map(|blocker| blocker.id.as_str())
+        .collect::<Vec<_>>();
+    let step_ids = report
+        .steps
+        .iter()
+        .map(|step| step.id.as_str())
+        .collect::<Vec<_>>();
+
+    let record = TargetRunAuditRecord {
+        timestamp_unix_ms: SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis(),
+        kind: "target_run",
+        selector: &report.selector,
+        target_name: &report.evaluation.target.name,
+        dry_run: report.dry_run,
+        outcome: report.outcome,
+        summary: &report.summary,
+        effective_mode: report.evaluation.effective_mode,
+        blocker_ids,
         step_ids,
     };
 
@@ -1036,6 +1481,27 @@ fn summarize_outcome(steps: &[ActionStep]) -> ActionOutcome {
     }
 }
 
+fn summarize_run_outcome(steps: &[ActionStep]) -> ActionOutcome {
+    if steps
+        .iter()
+        .any(|step| step.status == ActionStepStatus::Failed)
+    {
+        ActionOutcome::Failed
+    } else if steps
+        .iter()
+        .any(|step| step.status == ActionStepStatus::Blocked)
+    {
+        ActionOutcome::Blocked
+    } else if steps
+        .iter()
+        .all(|step| step.status == ActionStepStatus::Skipped)
+    {
+        ActionOutcome::NoOp
+    } else {
+        ActionOutcome::Success
+    }
+}
+
 fn summarize_control_action(
     action: ControlAction,
     target: ActionTarget,
@@ -1058,6 +1524,27 @@ fn summarize_control_action(
     }
 }
 
+fn summarize_target_run(
+    target_name: &str,
+    dry_run: bool,
+    outcome: ActionOutcome,
+    steps: &[ActionStep],
+) -> String {
+    let mode = if dry_run { "dry run" } else { "run" };
+    match outcome {
+        ActionOutcome::Success => format!("{mode} succeeded for {target_name}"),
+        ActionOutcome::NoOp => format!("{mode} made no changes for {target_name}"),
+        ActionOutcome::Blocked => format!("{mode} blocked for {target_name}"),
+        ActionOutcome::Failed => {
+            let failed = steps
+                .iter()
+                .filter(|step| step.status == ActionStepStatus::Failed)
+                .count();
+            format!("{mode} failed for {target_name} ({failed} failed steps)")
+        }
+    }
+}
+
 fn failed_check_ids(report: &PreflightReport) -> String {
     let failed = report
         .checks
@@ -1069,6 +1556,18 @@ fn failed_check_ids(report: &PreflightReport) -> String {
         "preflight did not expose specific failed checks".to_string()
     } else {
         failed.join(", ")
+    }
+}
+
+fn format_target_blockers(blockers: &[TargetBlocker]) -> String {
+    if blockers.is_empty() {
+        "no blockers recorded".to_string()
+    } else {
+        blockers
+            .iter()
+            .map(|blocker| format!("{}: {}", blocker.id, blocker.summary))
+            .collect::<Vec<_>>()
+            .join(", ")
     }
 }
 
@@ -1084,10 +1583,42 @@ fn format_examples(examples: &[PathBuf]) -> String {
     }
 }
 
+fn summarize_command_output(output: &CommandOutput) -> String {
+    let source = if output.stderr.trim().is_empty() {
+        output.stdout.trim()
+    } else {
+        output.stderr.trim()
+    };
+    if source.is_empty() {
+        return "command completed without output".to_string();
+    }
+
+    let lines = source.lines().collect::<Vec<_>>();
+    let start = lines.len().saturating_sub(20);
+    let mut summary = lines[start..].join("\n");
+    if start > 0 {
+        summary = format!("...truncated...\n{summary}");
+    }
+    if summary.len() > 4000 {
+        summary.truncate(4000);
+        summary.push_str("\n...truncated...");
+    }
+    summary
+}
+
 fn action_name(action: ControlAction) -> &'static str {
     match action {
         ControlAction::Pause => "pause",
         ControlAction::Resume => "resume",
+    }
+}
+
+fn describe_policy_mode(mode: crate::config::PolicyMode) -> &'static str {
+    match mode {
+        crate::config::PolicyMode::TwoWayCurated => "two-way curated",
+        crate::config::PolicyMode::BackupOnly => "backup only",
+        crate::config::PolicyMode::Excluded => "excluded",
+        crate::config::PolicyMode::Hold => "hold",
     }
 }
 

@@ -1,14 +1,29 @@
-use crate::model::{AcknowledgedLogSummary, LogSummary};
+use crate::config::PolicyMode;
+use crate::model::{AcknowledgedLogSummary, ActionOutcome, LogSummary};
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct AppState {
     #[serde(default)]
     pub acknowledged_log: Option<AcknowledgedLogSummary>,
+    #[serde(default)]
+    pub target_runs: BTreeMap<String, TargetRunState>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TargetRunState {
+    pub target_name: String,
+    pub local_path: PathBuf,
+    pub effective_mode: PolicyMode,
+    pub outcome: ActionOutcome,
+    pub dry_run: bool,
+    pub finished_at_unix_ms: u128,
+    pub summary: String,
 }
 
 pub fn load_state(path: &Path) -> Result<AppState> {
@@ -35,9 +50,8 @@ pub fn save_acknowledged_log(path: &Path, log: &LogSummary) -> Result<Acknowledg
             .as_millis(),
     };
 
-    let state = AppState {
-        acknowledged_log: Some(acknowledged.clone()),
-    };
+    let mut state = load_state(path)?;
+    state.acknowledged_log = Some(acknowledged.clone());
 
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
@@ -45,6 +59,16 @@ pub fn save_acknowledged_log(path: &Path, log: &LogSummary) -> Result<Acknowledg
     fs::write(path, serde_json::to_string_pretty(&state)?)?;
 
     Ok(acknowledged)
+}
+
+pub fn save_target_run(path: &Path, target_name: &str, run: TargetRunState) -> Result<()> {
+    let mut state = load_state(path)?;
+    state.target_runs.insert(target_name.to_string(), run);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(path, serde_json::to_string_pretty(&state)?)?;
+    Ok(())
 }
 
 pub fn matches_acknowledged_log(

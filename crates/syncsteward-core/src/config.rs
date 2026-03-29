@@ -12,6 +12,12 @@ pub struct AppConfig {
     pub sync_script_path: PathBuf,
     pub rclone_log_dir: PathBuf,
     pub ssh_key_path: PathBuf,
+    #[serde(default = "default_sync_filter_path")]
+    pub sync_filter_path: PathBuf,
+    #[serde(default = "default_memloft_filter_path")]
+    pub memloft_filter_path: PathBuf,
+    #[serde(default = "default_legacy_lock_path")]
+    pub legacy_lock_path: PathBuf,
     #[serde(default = "default_audit_log_path")]
     pub audit_log_path: PathBuf,
     #[serde(default = "default_state_path")]
@@ -117,6 +123,9 @@ impl Default for AppConfig {
             sync_script_path: PathBuf::from("~/bin/cloud-sync.sh"),
             rclone_log_dir: PathBuf::from("~/.config/rclone/logs"),
             ssh_key_path: PathBuf::from("~/.ssh/id_ed25519"),
+            sync_filter_path: default_sync_filter_path(),
+            memloft_filter_path: default_memloft_filter_path(),
+            legacy_lock_path: default_legacy_lock_path(),
             audit_log_path: default_audit_log_path(),
             state_path: default_state_path(),
             remote: RemoteConfig {
@@ -144,6 +153,18 @@ fn default_audit_log_path() -> PathBuf {
 
 fn default_state_path() -> PathBuf {
     PathBuf::from("~/.local/state/syncsteward/state.json")
+}
+
+fn default_sync_filter_path() -> PathBuf {
+    PathBuf::from("~/.config/rclone/sync-filters.txt")
+}
+
+fn default_memloft_filter_path() -> PathBuf {
+    PathBuf::from("~/.config/rclone/sync-filters-memloft.txt")
+}
+
+fn default_legacy_lock_path() -> PathBuf {
+    PathBuf::from("/tmp/cloud-sync.lock")
 }
 
 fn default_file_class_policies() -> Vec<FileClassPolicy> {
@@ -228,6 +249,9 @@ fn normalize_config(mut config: AppConfig) -> Result<AppConfig> {
     config.sync_script_path = expand_path(&config.sync_script_path);
     config.rclone_log_dir = expand_path(&config.rclone_log_dir);
     config.ssh_key_path = expand_path(&config.ssh_key_path);
+    config.sync_filter_path = expand_path(&config.sync_filter_path);
+    config.memloft_filter_path = expand_path(&config.memloft_filter_path);
+    config.legacy_lock_path = expand_path(&config.legacy_lock_path);
     config.audit_log_path = expand_path(&config.audit_log_path);
     config.state_path = expand_path(&config.state_path);
     config.scan.roots = config

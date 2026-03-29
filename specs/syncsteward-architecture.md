@@ -63,7 +63,7 @@ SyncSteward loads configuration from either:
 Configuration now carries both operator paths and safety policy:
 
 - launch agent and remote service locations
-- log, audit-log, and state paths
+- log, audit-log, state, filter, and legacy-lock paths
 - scan roots
 - folder policy overrides
 - file-class policy defaults
@@ -137,6 +137,13 @@ Pause and resume are explicit control actions, not side effects of a timer.
 - `resume` always runs behind the preflight gate
 - blocked resume attempts must explain exactly which checks are still failing
 - every pause or resume action should append a structured audit record
+
+The next execution layer is also explicit and fail-safe:
+
+- folder-scoped execution is allowed only for targets that pass global preflight and target readiness
+- the first executable slice is limited to `backup_only` targets
+- execution must respect the legacy sync lock so manual runs cannot overlap the old script
+- every target run should append audit history and record last outcome in state
 
 ## Planned Waves
 

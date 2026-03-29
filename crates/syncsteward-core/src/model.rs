@@ -37,6 +37,18 @@ pub struct TargetCheckReport {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct TargetRunReport {
+    pub config_source: String,
+    pub selector: String,
+    pub dry_run: bool,
+    pub outcome: ActionOutcome,
+    pub summary: String,
+    pub preflight_ready: bool,
+    pub evaluation: TargetEvaluation,
+    pub steps: Vec<ActionStep>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct SyncTargetRecord {
     pub name: String,
     pub local_path: PathBuf,

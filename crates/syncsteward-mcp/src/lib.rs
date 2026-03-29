@@ -11,9 +11,10 @@ use std::path::PathBuf;
 use syncsteward_core::{
     ActionTarget, ConfigScaffoldReport, ControlReport, LogAcknowledgeReport, PreflightReport,
     StatusReport, SyncTargetInventoryReport, TargetCheckReport, TargetCheckSetReport,
-    acknowledge_latest_log as core_acknowledge_latest_log, check_target as core_check_target,
-    check_targets as core_check_targets, pause, preflight, resume,
-    scaffold_config as core_scaffold_config, status, targets,
+    TargetRunReport, acknowledge_latest_log as core_acknowledge_latest_log,
+    check_target as core_check_target, check_targets as core_check_targets, pause, preflight,
+    resume, run_target as core_run_target, scaffold_config as core_scaffold_config, status,
+    targets,
 };
 
 type McpResult<T> = Result<Json<T>, String>;
@@ -21,6 +22,13 @@ type McpResult<T> = Result<Json<T>, String>;
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 struct TargetSelectorRequest {
     target: String,
+}
+
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+struct RunTargetRequest {
+    target: String,
+    #[serde(default)]
+    dry_run: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -108,6 +116,23 @@ impl SyncStewardMcpServer {
         let config_path = self.config_path.clone();
         let report = tokio::task::spawn_blocking(move || {
             core_check_target(config_path.as_deref(), &request.target)
+        })
+        .await
+        .map_err(|error| error.to_string())?
+        .map_err(|error| error.to_string())?;
+        Ok(Json(report))
+    }
+
+    #[tool(
+        description = "Run one approved backup-only target with full preflight and policy gating. Supports dry-run mode for safe validation."
+    )]
+    async fn run_target(
+        &self,
+        Parameters(request): Parameters<RunTargetRequest>,
+    ) -> McpResult<TargetRunReport> {
+        let config_path = self.config_path.clone();
+        let report = tokio::task::spawn_blocking(move || {
+            core_run_target(config_path.as_deref(), &request.target, request.dry_run)
         })
         .await
         .map_err(|error| error.to_string())?

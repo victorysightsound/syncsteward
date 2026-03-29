@@ -24,6 +24,7 @@ SyncSteward does not restart sync automatically. The current build exposes:
 - explicit acknowledgement of a historical incident log after cleanup
 - config scaffolding so recommended folder policies become a real SyncSteward config file
 - target-scoped readiness and blocker reports before any selective re-enablement
+- single-target execution for approved `backup_only` targets, with dry-run support, legacy lock protection, and per-target audit/state records
 
 ## Interfaces
 
@@ -40,6 +41,7 @@ cargo run -p syncsteward-cli -- preflight
 cargo run -p syncsteward-cli -- targets
 cargo run -p syncsteward-cli -- check-targets
 cargo run -p syncsteward-cli -- check-target Pictures
+cargo run -p syncsteward-cli -- run-target .memloft --dry-run
 cargo run -p syncsteward-cli -- acknowledge-latest-log
 cargo run -p syncsteward-cli -- scaffold-config
 cargo run -p syncsteward-cli -- pause --target all

@@ -25,6 +25,8 @@
 - explain effective mode and blockers per target before any selective re-enablement
 - protect live SQLite database files and sidecars with backup-only defaults unless explicitly overridden
 - run preflight and folder gating before each sync
+- add single-target execution for approved backup-only targets with dry-run support
+- record per-target last outcome in state and audit
 - allow folder-scoped rebaseline instead of broad `--resync`
 - add quarantine handling for conflict and `safeBackup` artifacts
 

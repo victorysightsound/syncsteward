@@ -101,6 +101,32 @@ Supports:
 - human output
 - JSON output
 
+### `syncsteward run-target`
+
+Run one configured target with full preflight and policy gating.
+
+Outputs:
+
+- overall run outcome
+- target evaluation at execution time
+- structured execution steps
+- dry-run flag
+
+Rules:
+
+- initial support is limited to `backup_only` targets
+- blocked if global preflight is not ready
+- blocked if the target is on hold, excluded, or missing locally
+- blocked if the legacy sync lock is already owned by another process
+- records last target outcome in SyncSteward state
+- appends a target-run audit record
+
+Supports:
+
+- `--dry-run`
+- human output
+- JSON output
+
 ### `syncsteward acknowledge-latest-log`
 
 Record the current latest `rclone` log as an acknowledged historical baseline after cleanup.
@@ -205,6 +231,10 @@ Read the same per-target readiness and blocker view exposed by the CLI.
 ### `check_target`
 
 Read the same single-target readiness and blocker view exposed by the CLI.
+
+### `run_target`
+
+Run the same guarded single-target execution path exposed by the CLI, including dry-run support.
 
 ### `acknowledge_latest_log`
 
