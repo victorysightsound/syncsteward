@@ -20,6 +20,7 @@ The app is responsible for:
 - guarded preflight checks
 - conflict and backup artifact detection
 - sync orchestration policy
+- file-class safety defaults for risky artifacts like live SQLite databases
 - notifications and failure escalation
 - future folder policy management and controlled re-enablement
 
@@ -55,6 +56,14 @@ SyncSteward loads configuration from either:
 - `~/.config/syncsteward/config.toml`
 - built-in defaults if no config file exists
 
+Configuration now carries both operator paths and safety policy:
+
+- launch agent and remote service locations
+- log and audit-log paths
+- scan roots
+- folder policy overrides
+- file-class policy defaults
+
 ### Status
 
 Status is a neutral snapshot of:
@@ -63,6 +72,23 @@ Status is a neutral snapshot of:
 - remote sync writer state
 - drift artifact counts and examples
 - latest sync log summary
+- active folder and file-class policy defaults
+
+### Policy Model
+
+SyncSteward is folder-first, with file-class overrides for dangerous content.
+
+- folder policies express the normal behavior for a subtree
+- file-class policies can tighten safety for specific artifacts
+- specific path overrides will come later for rare exceptions
+
+The default dangerous-file posture is fail-safe:
+
+- `*.db`, `*.sqlite`, `*.sqlite3` default to `backup_only`
+- `*.db-wal`, `*.sqlite-wal`, `*.sqlite3-wal` default to `backup_only`
+- `*.db-shm`, `*.sqlite-shm`, `*.sqlite3-shm` default to `backup_only`
+- `*.conflict*` defaults to `hold`
+- `*victorystore-safeBackup*` defaults to `hold`
 
 ### Preflight
 
@@ -76,10 +102,19 @@ Examples of fail conditions:
 - unresolved `safeBackup` artifacts
 - latest `rclone` log still reports `out of sync`
 
+### Coordinated Control
+
+Pause and resume are explicit control actions, not side effects of a timer.
+
+- `pause` is idempotent and should safely no-op if the stack is already paused
+- `resume` always runs behind the preflight gate
+- blocked resume attempts must explain exactly which checks are still failing
+- every pause or resume action should append a structured audit record
+
 ## Planned Waves
 
 1. Health and preflight inspection
-2. Coordinated pause/resume and controlled sync execution
-3. Per-folder sync policy and quarantine management
+2. Coordinated pause/resume and structured audit logging
+3. Per-folder sync policy, file-class overrides, and quarantine management
 4. Notifications and escalation
 5. Menu bar UI and operator workflow polish

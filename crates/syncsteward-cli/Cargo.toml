@@ -5,6 +5,7 @@ edition.workspace = true
 
 [dependencies]
 clap.workspace = true
+serde.workspace = true
 serde_json.workspace = true
 syncsteward-core = { path = "../syncsteward-core" }
 syncsteward-mcp = { path = "../syncsteward-mcp" }

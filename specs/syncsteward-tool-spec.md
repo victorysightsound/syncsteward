@@ -24,6 +24,7 @@ MCP remains the AI-facing surface for:
 Return a full health snapshot:
 
 - config source
+- active folder and file-class policy defaults
 - local launch agent state
 - remote host reachability and OneDrive service state
 - conflict and `safeBackup` artifact counts
@@ -49,6 +50,48 @@ Supports:
 - human output
 - JSON output
 
+### `syncsteward pause`
+
+Pause:
+
+- the local launch agent
+- the remote OneDrive service
+- or both
+
+Rules:
+
+- idempotent
+- returns structured step-by-step action details
+- exits non-zero on mutation failure
+- appends a structured audit record
+
+Supports:
+
+- `--target local|remote|all`
+- human output
+- JSON output
+
+### `syncsteward resume`
+
+Resume:
+
+- the local launch agent
+- the remote OneDrive service
+- or both
+
+Rules:
+
+- any resume path is blocked until preflight succeeds
+- returns structured blocker details when blocked
+- exits with a distinct non-zero code when blocked
+- appends a structured audit record
+
+Supports:
+
+- `--target local|remote|all`
+- human output
+- JSON output
+
 ### `syncsteward mcp stdio`
 
 Run the MCP server over stdio.
@@ -63,13 +106,19 @@ Read the same health snapshot exposed by the CLI.
 
 Run the same guarded preflight checks exposed by the CLI.
 
+### `pause_all`, `pause_local`, `pause_remote`
+
+Run the same coordinated pause actions exposed by the CLI.
+
+### `resume_all`, `resume_local`, `resume_remote`
+
+Run the same guarded resume actions exposed by the CLI.
+
 ## Deferred Surface
 
 Not part of the first slice:
 
-- automatic sync restart
 - folder policy editing
 - conflict quarantine moves
-- remote service mutation
 - notifications
 - UI

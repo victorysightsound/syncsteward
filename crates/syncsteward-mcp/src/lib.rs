@@ -5,7 +5,7 @@ use rmcp::{
     tool, tool_handler, tool_router,
 };
 use std::path::PathBuf;
-use syncsteward_core::{PreflightReport, StatusReport, preflight, status};
+use syncsteward_core::{ActionTarget, ControlReport, PreflightReport, StatusReport, pause, preflight, resume, status};
 
 type McpResult<T> = Result<Json<T>, String>;
 
@@ -58,6 +58,36 @@ impl SyncStewardMcpServer {
             .map_err(|error| error.to_string())?;
         Ok(Json(report))
     }
+
+    #[tool(description = "Pause both the local launch agent and the remote OneDrive service. This is safe to run repeatedly.")]
+    async fn pause_all(&self) -> McpResult<ControlReport> {
+        self.run_control(ActionTarget::All, pause).await
+    }
+
+    #[tool(description = "Pause only the local launch agent.")]
+    async fn pause_local(&self) -> McpResult<ControlReport> {
+        self.run_control(ActionTarget::Local, pause).await
+    }
+
+    #[tool(description = "Pause only the remote OneDrive service.")]
+    async fn pause_remote(&self) -> McpResult<ControlReport> {
+        self.run_control(ActionTarget::Remote, pause).await
+    }
+
+    #[tool(description = "Resume both the local launch agent and the remote OneDrive service. This stays blocked until preflight succeeds.")]
+    async fn resume_all(&self) -> McpResult<ControlReport> {
+        self.run_control(ActionTarget::All, resume).await
+    }
+
+    #[tool(description = "Resume only the local launch agent. This stays blocked until preflight succeeds.")]
+    async fn resume_local(&self) -> McpResult<ControlReport> {
+        self.run_control(ActionTarget::Local, resume).await
+    }
+
+    #[tool(description = "Resume only the remote OneDrive service. This stays blocked until preflight succeeds.")]
+    async fn resume_remote(&self) -> McpResult<ControlReport> {
+        self.run_control(ActionTarget::Remote, resume).await
+    }
 }
 
 pub fn serve_stdio_blocking(config_path: Option<PathBuf>) -> Result<(), String> {
@@ -78,4 +108,21 @@ pub fn serve_stdio_blocking(config_path: Option<PathBuf>) -> Result<(), String> 
             .map_err(|error| error.to_string())?;
         Ok(())
     })
+}
+
+impl SyncStewardMcpServer {
+    async fn run_control(
+        &self,
+        target: ActionTarget,
+        operation: fn(Option<&std::path::Path>, ActionTarget) -> Result<ControlReport, anyhow::Error>,
+    ) -> McpResult<ControlReport> {
+        let config_path = self.config_path.clone();
+        let handle = tokio::task::spawn_blocking(move || operation(config_path.as_deref(), target));
+        let report: Result<ControlReport, anyhow::Error> = handle
+            .await
+            .map_err(|error| error.to_string())?
+            ;
+        let report = report.map_err(|error| error.to_string())?;
+        Ok(Json(report))
+    }
 }

@@ -1,6 +1,9 @@
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use std::path::PathBuf;
-use syncsteward_core::{CheckStatus, PreflightReport, StatusReport, preflight, status};
+use syncsteward_core::{
+    ActionOutcome, ActionStepStatus, ActionTarget, CheckStatus, ControlReport, PolicyMode,
+    PreflightReport, StatusReport, pause, preflight, resume, status,
+};
 
 #[derive(Debug, Parser)]
 #[command(name = "syncsteward", about = "Safety-first sync health and preflight control")]
@@ -24,6 +27,21 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Pause the local launch agent, remote OneDrive service, or both.
+    Pause {
+        #[arg(long, value_enum, default_value_t = TargetArg::All)]
+        target: TargetArg,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Resume the local launch agent, remote OneDrive service, or both.
+    /// Resume stays blocked until preflight passes.
+    Resume {
+        #[arg(long, value_enum, default_value_t = TargetArg::All)]
+        target: TargetArg,
+        #[arg(long)]
+        json: bool,
+    },
     /// Run the MCP server.
     Mcp {
         #[command(subcommand)]
@@ -37,45 +55,113 @@ enum McpCommand {
     Stdio,
 }
 
-fn main() -> Result<(), String> {
-    let cli = Cli::parse();
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum TargetArg {
+    Local,
+    Remote,
+    All,
+}
 
+fn main() -> Result<(), String> {
+    std::process::exit(run());
+}
+
+fn run() -> i32 {
+    let cli = Cli::parse();
     match cli.command {
         Command::Status { json } => {
-            let report = status(cli.config.as_deref()).map_err(|error| error.to_string())?;
+            let report = match status(cli.config.as_deref()) {
+                Ok(report) => report,
+                Err(error) => return fatal_error(&error.to_string()),
+            };
             if json {
-                println!(
-                    "{}",
-                    serde_json::to_string_pretty(&report).map_err(|error| error.to_string())?
-                );
+                if print_json(&report).is_err() {
+                    return fatal_error("failed to serialize status as JSON");
+                }
             } else {
                 print_status(&report);
             }
+            0
         }
         Command::Preflight { json } => {
-            let report = preflight(cli.config.as_deref()).map_err(|error| error.to_string())?;
+            let report = match preflight(cli.config.as_deref()) {
+                Ok(report) => report,
+                Err(error) => return fatal_error(&error.to_string()),
+            };
             if json {
-                println!(
-                    "{}",
-                    serde_json::to_string_pretty(&report).map_err(|error| error.to_string())?
-                );
+                if print_json(&report).is_err() {
+                    return fatal_error("failed to serialize preflight as JSON");
+                }
             } else {
                 print_preflight(&report);
             }
+            0
+        }
+        Command::Pause { target, json } => {
+            let report = match pause(cli.config.as_deref(), target.into()) {
+                Ok(report) => report,
+                Err(error) => return fatal_error(&error.to_string()),
+            };
+            if json {
+                if print_json(&report).is_err() {
+                    return fatal_error("failed to serialize pause report as JSON");
+                }
+            } else {
+                print_control(&report);
+            }
+            control_exit_code(&report)
+        }
+        Command::Resume { target, json } => {
+            let report = match resume(cli.config.as_deref(), target.into()) {
+                Ok(report) => report,
+                Err(error) => return fatal_error(&error.to_string()),
+            };
+            if json {
+                if print_json(&report).is_err() {
+                    return fatal_error("failed to serialize resume report as JSON");
+                }
+            } else {
+                print_control(&report);
+            }
+            control_exit_code(&report)
         }
         Command::Mcp {
             command: McpCommand::Stdio,
         } => {
-            syncsteward_mcp::serve_stdio_blocking(cli.config)?;
+            match syncsteward_mcp::serve_stdio_blocking(cli.config) {
+                Ok(()) => 0,
+                Err(error) => fatal_error(&error),
+            }
         }
     }
+}
 
-    Ok(())
+impl From<TargetArg> for ActionTarget {
+    fn from(value: TargetArg) -> Self {
+        match value {
+            TargetArg::Local => ActionTarget::Local,
+            TargetArg::Remote => ActionTarget::Remote,
+            TargetArg::All => ActionTarget::All,
+        }
+    }
 }
 
 fn print_status(report: &StatusReport) {
     println!("SyncSteward Status");
     println!("Config source: {}", report.config_source);
+    println!(
+        "Policies: {} folder overrides, {} file-class defaults",
+        report.policy.folder_policies.len(),
+        report.policy.file_class_policies.len()
+    );
+    for entry in &report.policy.file_class_policies {
+        println!(
+            "  {:?}: {} [{}]",
+            entry.class,
+            describe_policy_mode(entry.mode),
+            entry.patterns.join(", ")
+        );
+    }
     println!(
         "Local launch agent: {} ({})",
         if report.launch_agent.loaded {
@@ -153,6 +239,31 @@ fn print_preflight(report: &PreflightReport) {
     print_status(&report.status);
 }
 
+fn print_control(report: &ControlReport) {
+    println!(
+        "SyncSteward {}: {:?}",
+        format!("{:?}", report.action).to_lowercase(),
+        report.outcome
+    );
+    println!("{}", report.summary);
+    for step in &report.steps {
+        println!(
+            "[{}] {}: {}",
+            describe_step_status(step.status),
+            step.id,
+            step.summary
+        );
+        println!("  {}", step.detail);
+    }
+    if let Some(preflight) = &report.preflight {
+        println!();
+        print_preflight(preflight);
+    } else {
+        println!();
+        print_status(&report.status);
+    }
+}
+
 fn print_path_samples(title: &str, paths: &[PathBuf]) {
     if paths.is_empty() {
         return;
@@ -161,4 +272,40 @@ fn print_path_samples(title: &str, paths: &[PathBuf]) {
     for path in paths {
         println!("  {}", path.display());
     }
+}
+
+fn describe_policy_mode(mode: PolicyMode) -> &'static str {
+    match mode {
+        PolicyMode::TwoWayCurated => "two-way curated",
+        PolicyMode::BackupOnly => "backup only",
+        PolicyMode::Excluded => "excluded",
+        PolicyMode::Hold => "hold",
+    }
+}
+
+fn describe_step_status(status: ActionStepStatus) -> &'static str {
+    match status {
+        ActionStepStatus::Applied => "APPLIED",
+        ActionStepStatus::Skipped => "SKIPPED",
+        ActionStepStatus::Blocked => "BLOCKED",
+        ActionStepStatus::Failed => "FAILED",
+    }
+}
+
+fn control_exit_code(report: &ControlReport) -> i32 {
+    match report.outcome {
+        ActionOutcome::Success | ActionOutcome::NoOp => 0,
+        ActionOutcome::Blocked => 2,
+        ActionOutcome::Failed => 1,
+    }
+}
+
+fn fatal_error(message: &str) -> i32 {
+    eprintln!("{message}");
+    1
+}
+
+fn print_json<T: serde::Serialize>(value: &T) -> Result<(), serde_json::Error> {
+    println!("{}", serde_json::to_string_pretty(value)?);
+    Ok(())
 }

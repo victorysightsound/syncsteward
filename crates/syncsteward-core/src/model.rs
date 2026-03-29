@@ -1,3 +1,4 @@
+use crate::config::{FileClassPolicy, FolderPolicy};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -5,10 +6,17 @@ use std::path::PathBuf;
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct StatusReport {
     pub config_source: String,
+    pub policy: PolicySummary,
     pub launch_agent: LaunchAgentStatus,
     pub remote: RemoteStatus,
     pub artifacts: ArtifactReport,
     pub latest_log: Option<LogSummary>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct PolicySummary {
+    pub folder_policies: Vec<FolderPolicy>,
+    pub file_class_policies: Vec<FileClassPolicy>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -77,4 +85,56 @@ pub enum CheckStatus {
     Pass,
     Warn,
     Fail,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ControlAction {
+    Pause,
+    Resume,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ActionTarget {
+    Local,
+    Remote,
+    All,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ActionOutcome {
+    Success,
+    NoOp,
+    Blocked,
+    Failed,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ControlReport {
+    pub action: ControlAction,
+    pub target: ActionTarget,
+    pub outcome: ActionOutcome,
+    pub summary: String,
+    pub steps: Vec<ActionStep>,
+    pub preflight: Option<PreflightReport>,
+    pub status: StatusReport,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ActionStep {
+    pub id: String,
+    pub status: ActionStepStatus,
+    pub summary: String,
+    pub detail: String,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ActionStepStatus {
+    Applied,
+    Skipped,
+    Blocked,
+    Failed,
 }

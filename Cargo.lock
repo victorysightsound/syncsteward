@@ -718,6 +718,7 @@ name = "syncsteward-cli"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "serde",
  "serde_json",
  "syncsteward-core",
  "syncsteward-mcp",
@@ -731,6 +732,7 @@ dependencies = [
  "dirs",
  "schemars",
  "serde",
+ "serde_json",
  "toml",
  "walkdir",
 ]
@@ -739,6 +741,7 @@ dependencies = [
 name = "syncsteward-mcp"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "rmcp",
  "syncsteward-core",
  "tokio",

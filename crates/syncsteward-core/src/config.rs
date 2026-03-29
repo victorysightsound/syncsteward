@@ -1,5 +1,6 @@
 use anyhow::{Context, Result, bail};
 use dirs::home_dir;
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -11,8 +12,12 @@ pub struct AppConfig {
     pub sync_script_path: PathBuf,
     pub rclone_log_dir: PathBuf,
     pub ssh_key_path: PathBuf,
+    #[serde(default = "default_audit_log_path")]
+    pub audit_log_path: PathBuf,
     pub remote: RemoteConfig,
     pub scan: ScanConfig,
+    #[serde(default)]
+    pub policy: PolicyConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -26,6 +31,57 @@ pub struct RemoteConfig {
 pub struct ScanConfig {
     pub roots: Vec<PathBuf>,
     pub max_examples: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct PolicyConfig {
+    #[serde(default)]
+    pub folders: Vec<FolderPolicy>,
+    #[serde(default = "default_file_class_policies")]
+    pub file_classes: Vec<FileClassPolicy>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct FolderPolicy {
+    pub path: PathBuf,
+    pub mode: PolicyMode,
+    #[serde(default)]
+    pub label: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct FileClassPolicy {
+    pub class: FileClass,
+    pub mode: PolicyMode,
+    pub patterns: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum PolicyMode {
+    TwoWayCurated,
+    BackupOnly,
+    Excluded,
+    Hold,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum FileClass {
+    Database,
+    SqliteWal,
+    SqliteShm,
+    ConflictArtifact,
+    SafeBackupArtifact,
+}
+
+impl Default for PolicyConfig {
+    fn default() -> Self {
+        Self {
+            folders: Vec::new(),
+            file_classes: default_file_class_policies(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -59,6 +115,7 @@ impl Default for AppConfig {
             sync_script_path: PathBuf::from("~/bin/cloud-sync.sh"),
             rclone_log_dir: PathBuf::from("~/.config/rclone/logs"),
             ssh_key_path: PathBuf::from("~/.ssh/id_ed25519"),
+            audit_log_path: default_audit_log_path(),
             remote: RemoteConfig {
                 ssh_user: "john".to_string(),
                 preferred_hosts: vec!["192.168.77.135".to_string(), "192.168.195.155".to_string()],
@@ -73,8 +130,51 @@ impl Default for AppConfig {
                 ],
                 max_examples: 20,
             },
+            policy: PolicyConfig::default(),
         }
     }
+}
+
+fn default_audit_log_path() -> PathBuf {
+    PathBuf::from("~/.local/state/syncsteward/audit.jsonl")
+}
+
+fn default_file_class_policies() -> Vec<FileClassPolicy> {
+    vec![
+        FileClassPolicy {
+            class: FileClass::Database,
+            mode: PolicyMode::BackupOnly,
+            patterns: vec!["*.db".to_string(), "*.sqlite".to_string(), "*.sqlite3".to_string()],
+        },
+        FileClassPolicy {
+            class: FileClass::SqliteWal,
+            mode: PolicyMode::BackupOnly,
+            patterns: vec![
+                "*.db-wal".to_string(),
+                "*.sqlite-wal".to_string(),
+                "*.sqlite3-wal".to_string(),
+            ],
+        },
+        FileClassPolicy {
+            class: FileClass::SqliteShm,
+            mode: PolicyMode::BackupOnly,
+            patterns: vec![
+                "*.db-shm".to_string(),
+                "*.sqlite-shm".to_string(),
+                "*.sqlite3-shm".to_string(),
+            ],
+        },
+        FileClassPolicy {
+            class: FileClass::ConflictArtifact,
+            mode: PolicyMode::Hold,
+            patterns: vec!["*.conflict*".to_string()],
+        },
+        FileClassPolicy {
+            class: FileClass::SafeBackupArtifact,
+            mode: PolicyMode::Hold,
+            patterns: vec!["*victorystore-safeBackup*".to_string()],
+        },
+    ]
 }
 
 pub fn load_config(config_path: Option<&Path>) -> Result<LoadedConfig> {
@@ -117,11 +217,22 @@ fn normalize_config(mut config: AppConfig) -> Result<AppConfig> {
     config.sync_script_path = expand_path(&config.sync_script_path);
     config.rclone_log_dir = expand_path(&config.rclone_log_dir);
     config.ssh_key_path = expand_path(&config.ssh_key_path);
+    config.audit_log_path = expand_path(&config.audit_log_path);
     config.scan.roots = config
         .scan
         .roots
         .iter()
         .map(|path| expand_path(path))
+        .collect();
+    config.policy.folders = config
+        .policy
+        .folders
+        .iter()
+        .map(|policy| FolderPolicy {
+            path: expand_path(&policy.path),
+            mode: policy.mode,
+            label: policy.label.clone(),
+        })
         .collect();
 
     if config.launch_agent_label.trim().is_empty() {
@@ -158,7 +269,7 @@ pub fn expand_path(path: &Path) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
-    use super::expand_path;
+    use super::{FileClass, PolicyConfig, PolicyMode, expand_path};
     use std::path::{Path, PathBuf};
 
     #[test]
@@ -166,5 +277,30 @@ mod tests {
         let expanded = expand_path(Path::new("~/Library"));
         assert!(expanded.ends_with(PathBuf::from("Library")));
         assert_ne!(expanded, PathBuf::from("~/Library"));
+    }
+
+    #[test]
+    fn default_policy_protects_database_files() {
+        let policy = PolicyConfig::default();
+
+        let database = policy
+            .file_classes
+            .iter()
+            .find(|entry| entry.class == FileClass::Database)
+            .expect("database policy");
+        let wal = policy
+            .file_classes
+            .iter()
+            .find(|entry| entry.class == FileClass::SqliteWal)
+            .expect("sqlite wal policy");
+        let shm = policy
+            .file_classes
+            .iter()
+            .find(|entry| entry.class == FileClass::SqliteShm)
+            .expect("sqlite shm policy");
+
+        assert_eq!(database.mode, PolicyMode::BackupOnly);
+        assert_eq!(wal.mode, PolicyMode::BackupOnly);
+        assert_eq!(shm.mode, PolicyMode::BackupOnly);
     }
 }

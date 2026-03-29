@@ -13,10 +13,13 @@
 - add explicit remote OneDrive pause and resume actions
 - require preflight success before any resume path is allowed
 - record every mutation action in structured logs
+- make pause idempotent and fail closed
+- surface the same controls in both CLI and MCP
 
 ## Phase 3: Folder Policies and Safe Execution
 
 - classify folders as two-way, backup-only, excluded, or hold
+- protect live SQLite database files and sidecars with backup-only defaults unless explicitly overridden
 - run preflight and folder gating before each sync
 - allow folder-scoped rebaseline instead of broad `--resync`
 - add quarantine handling for conflict and `safeBackup` artifacts

@@ -2,20 +2,23 @@
 
 SyncSteward is a safety-first sync control plane for the existing macOS `rclone` and remote `onedrive` stack.
 
-The first wave focuses on two things:
+The current wave focuses on three things:
 
 - make the current sync state observable before anything is re-enabled
 - give both CLI and MCP surfaces the same guarded health and preflight view
+- add explicit pause and resume controls that stay fail-closed
 
 ## Current Scope
 
-SyncSteward does not restart or mutate sync automatically yet. The initial build exposes:
+SyncSteward does not restart sync automatically. The current build exposes:
 
 - local launch agent status
 - remote OneDrive service status
 - conflict and `safeBackup` artifact detection
 - latest `rclone` log summary
 - preflight checks that answer whether the system is safe to re-enable
+- explicit `pause` and guarded `resume`
+- backup-only defaults for live SQLite database files and sidecars
 
 ## Interfaces
 
@@ -29,6 +32,8 @@ UI comes later, after the CLI and MCP surfaces are stable.
 ```bash
 cargo run -p syncsteward-cli -- status
 cargo run -p syncsteward-cli -- preflight
+cargo run -p syncsteward-cli -- pause --target all
+cargo run -p syncsteward-cli -- resume --target all
 cargo run -p syncsteward-cli -- status --json
 cargo run -p syncsteward-cli -- mcp stdio
 ```

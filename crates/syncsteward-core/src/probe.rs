@@ -1,12 +1,16 @@
 use crate::config::{AppConfig, load_config};
 use crate::model::{
-    ArtifactReport, CheckStatus, LaunchAgentStatus, LogSummary, PreflightCheck, PreflightReport,
-    RemoteStatus, ServiceState, StatusReport,
+    ActionOutcome, ActionStep, ActionStepStatus, ActionTarget, ArtifactReport, CheckStatus,
+    ControlAction, ControlReport, LaunchAgentStatus, LogSummary, PolicySummary, PreflightCheck,
+    PreflightReport, RemoteStatus, ServiceState, StatusReport,
 };
 use anyhow::Result;
-use std::fs;
+use serde::Serialize;
+use std::fs::{self, OpenOptions};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::{SystemTime, UNIX_EPOCH};
 use walkdir::{DirEntry, WalkDir};
 
 pub fn status(config_path: Option<&Path>) -> Result<StatusReport> {
@@ -20,14 +24,35 @@ pub fn preflight(config_path: Option<&Path>) -> Result<PreflightReport> {
     Ok(evaluate_preflight(status))
 }
 
+pub fn pause(config_path: Option<&Path>, target: ActionTarget) -> Result<ControlReport> {
+    let loaded = load_config(config_path)?;
+    let config_source = loaded.source.description();
+    let mut report = execute_pause(&loaded.config, &config_source, target);
+    record_audit_event(&loaded.config, &mut report);
+    Ok(report)
+}
+
+pub fn resume(config_path: Option<&Path>, target: ActionTarget) -> Result<ControlReport> {
+    let loaded = load_config(config_path)?;
+    let config_source = loaded.source.description();
+    let mut report = execute_resume(&loaded.config, &config_source, target);
+    record_audit_event(&loaded.config, &mut report);
+    Ok(report)
+}
+
 fn collect_status(config: &AppConfig, config_source: String) -> StatusReport {
     let launch_agent = probe_launch_agent(&config.launch_agent_label);
     let remote = probe_remote_service(config);
     let artifacts = scan_artifacts(config);
     let latest_log = summarize_latest_log(&config.rclone_log_dir, config.scan.max_examples);
+    let policy = PolicySummary {
+        folder_policies: config.policy.folders.clone(),
+        file_class_policies: config.policy.file_classes.clone(),
+    };
 
     StatusReport {
         config_source,
+        policy,
         launch_agent,
         remote,
         artifacts,
@@ -121,11 +146,7 @@ fn evaluate_preflight(status: StatusReport) -> PreflightReport {
         Some(log) if log.warning_count > 0 => warn_check(
             "latest_log_clean",
             "latest rclone log still reports warnings".to_string(),
-            format!(
-                "{} warnings in {}",
-                log.warning_count,
-                log.path.display()
-            ),
+            format!("{} warnings in {}", log.warning_count, log.path.display()),
         ),
         Some(log) => pass_check(
             "latest_log_clean",
@@ -148,6 +169,301 @@ fn evaluate_preflight(status: StatusReport) -> PreflightReport {
     }
 }
 
+fn execute_pause(config: &AppConfig, config_source: &str, target: ActionTarget) -> ControlReport {
+    let mut steps = Vec::new();
+
+    if target.includes_local() {
+        steps.push(pause_local_launch_agent(config));
+    }
+    if target.includes_remote() {
+        steps.push(pause_remote_onedrive(config));
+    }
+
+    let status = collect_status(config, config_source.to_string());
+    let outcome = summarize_outcome(&steps);
+    let summary = summarize_control_action(ControlAction::Pause, target, outcome, &steps);
+
+    ControlReport {
+        action: ControlAction::Pause,
+        target,
+        outcome,
+        summary,
+        steps,
+        preflight: None,
+        status,
+    }
+}
+
+fn execute_resume(config: &AppConfig, config_source: &str, target: ActionTarget) -> ControlReport {
+    let preflight = evaluate_preflight(collect_status(config, config_source.to_string()));
+    if !preflight.ready {
+        let mut steps = vec![blocked_step(
+            "preflight_gate",
+            "resume blocked by preflight failures".to_string(),
+            failed_check_ids(&preflight),
+        )];
+        let outcome = ActionOutcome::Blocked;
+        let summary = summarize_control_action(ControlAction::Resume, target, outcome, &steps);
+        return ControlReport {
+            action: ControlAction::Resume,
+            target,
+            outcome,
+            summary,
+            steps: std::mem::take(&mut steps),
+            preflight: Some(preflight.clone()),
+            status: preflight.status,
+        };
+    }
+
+    let mut steps = Vec::new();
+
+    if target.includes_remote() {
+        steps.push(resume_remote_onedrive(config));
+    }
+    if target.includes_local() {
+        steps.push(resume_local_launch_agent(config));
+    }
+
+    let status = collect_status(config, config_source.to_string());
+    let outcome = summarize_outcome(&steps);
+    let summary = summarize_control_action(ControlAction::Resume, target, outcome, &steps);
+
+    ControlReport {
+        action: ControlAction::Resume,
+        target,
+        outcome,
+        summary,
+        steps,
+        preflight: Some(preflight),
+        status,
+    }
+}
+
+fn pause_local_launch_agent(config: &AppConfig) -> ActionStep {
+    let launch_agent = probe_launch_agent(&config.launch_agent_label);
+    if !launch_agent.loaded {
+        return skipped_step(
+            "pause_local_launch_agent",
+            format!("{} was already paused", config.launch_agent_label),
+            launch_agent.detail,
+        );
+    }
+
+    let uid = current_uid();
+    let domain = format!("gui/{uid}");
+    let plist = config.launch_agent_path.to_string_lossy().to_string();
+    let primary = run_command("launchctl", ["bootout", domain.as_str(), plist.as_str()]);
+    if primary.success {
+        return applied_step(
+            "pause_local_launch_agent",
+            format!("paused {}", config.launch_agent_label),
+            primary.trim_or(&primary.stdout).to_string(),
+        );
+    }
+
+    let fallback = run_command("launchctl", ["unload", plist.as_str()]);
+    if fallback.success {
+        applied_step(
+            "pause_local_launch_agent",
+            format!("paused {} via unload fallback", config.launch_agent_label),
+            fallback.trim_or(&fallback.stdout).to_string(),
+        )
+    } else {
+        failed_step(
+            "pause_local_launch_agent",
+            format!("failed to pause {}", config.launch_agent_label),
+            format!(
+                "bootout: {}; unload fallback: {}",
+                primary.trim_or(&primary.stdout),
+                fallback.trim_or(&fallback.stdout)
+            ),
+        )
+    }
+}
+
+fn resume_local_launch_agent(config: &AppConfig) -> ActionStep {
+    let launch_agent = probe_launch_agent(&config.launch_agent_label);
+    if launch_agent.loaded {
+        return skipped_step(
+            "resume_local_launch_agent",
+            format!("{} was already loaded", config.launch_agent_label),
+            launch_agent.detail,
+        );
+    }
+    if !config.launch_agent_path.exists() {
+        return failed_step(
+            "resume_local_launch_agent",
+            format!("cannot resume {}", config.launch_agent_label),
+            format!(
+                "launch agent plist does not exist at {}",
+                config.launch_agent_path.display()
+            ),
+        );
+    }
+
+    let uid = current_uid();
+    let domain = format!("gui/{uid}");
+    let plist = config.launch_agent_path.to_string_lossy().to_string();
+    let output = run_command("launchctl", ["bootstrap", domain.as_str(), plist.as_str()]);
+    if output.success {
+        applied_step(
+            "resume_local_launch_agent",
+            format!("resumed {}", config.launch_agent_label),
+            output.trim_or(&output.stdout).to_string(),
+        )
+    } else {
+        failed_step(
+            "resume_local_launch_agent",
+            format!("failed to resume {}", config.launch_agent_label),
+            output.trim_or(&output.stdout).to_string(),
+        )
+    }
+}
+
+fn pause_remote_onedrive(config: &AppConfig) -> ActionStep {
+    let remote = probe_remote_service(config);
+    if matches!(remote.service_state, ServiceState::Inactive) {
+        return skipped_step(
+            "pause_remote_onedrive",
+            "remote OneDrive service was already inactive".to_string(),
+            remote.detail,
+        );
+    }
+    let Some(host) = remote.selected_host.as_deref() else {
+        return failed_step(
+            "pause_remote_onedrive",
+            "cannot pause remote OneDrive service".to_string(),
+            remote.detail,
+        );
+    };
+
+    let stop = run_remote_systemctl(config, host, "stop");
+    if stop.success {
+        applied_step(
+            "pause_remote_onedrive",
+            format!("paused {} on {}", config.remote.onedrive_service, host),
+            stop.trim_or(&stop.stdout).to_string(),
+        )
+    } else {
+        failed_step(
+            "pause_remote_onedrive",
+            format!("failed to pause {} on {}", config.remote.onedrive_service, host),
+            stop.trim_or(&stop.stdout).to_string(),
+        )
+    }
+}
+
+fn resume_remote_onedrive(config: &AppConfig) -> ActionStep {
+    let remote = probe_remote_service(config);
+    if matches!(remote.service_state, ServiceState::Active) {
+        return skipped_step(
+            "resume_remote_onedrive",
+            "remote OneDrive service was already active".to_string(),
+            remote.detail,
+        );
+    }
+    let Some(host) = remote.selected_host.as_deref() else {
+        let fallback_host = config.remote.preferred_hosts.first().cloned().unwrap_or_default();
+        if fallback_host.is_empty() {
+            return failed_step(
+                "resume_remote_onedrive",
+                "cannot resume remote OneDrive service".to_string(),
+                "no configured remote host is available".to_string(),
+            );
+        }
+        return resume_remote_onedrive_on_host(config, &fallback_host);
+    };
+
+    resume_remote_onedrive_on_host(config, host)
+}
+
+fn resume_remote_onedrive_on_host(config: &AppConfig, host: &str) -> ActionStep {
+    let start = run_remote_systemctl(config, host, "start");
+    if start.success {
+        applied_step(
+            "resume_remote_onedrive",
+            format!("resumed {} on {}", config.remote.onedrive_service, host),
+            start.trim_or(&start.stdout).to_string(),
+        )
+    } else {
+        failed_step(
+            "resume_remote_onedrive",
+            format!("failed to resume {} on {}", config.remote.onedrive_service, host),
+            start.trim_or(&start.stdout).to_string(),
+        )
+    }
+}
+
+fn record_audit_event(config: &AppConfig, report: &mut ControlReport) {
+    if let Err(error) = append_audit_record(&config.audit_log_path, report) {
+        report.steps.push(failed_step(
+            "audit_log_write",
+            format!(
+                "failed to record {} action audit log",
+                action_name(report.action)
+            ),
+            error.to_string(),
+        ));
+        if report.outcome != ActionOutcome::Blocked {
+            report.outcome = ActionOutcome::Failed;
+        }
+        report.summary = summarize_control_action(report.action, report.target, report.outcome, &report.steps);
+    }
+}
+
+fn append_audit_record(path: &Path, report: &ControlReport) -> Result<()> {
+    #[derive(Serialize)]
+    struct AuditRecord<'a> {
+        timestamp_unix_ms: u128,
+        action: ControlAction,
+        target: ActionTarget,
+        outcome: ActionOutcome,
+        summary: &'a str,
+        blocked_check_ids: Vec<&'a str>,
+        step_ids: Vec<&'a str>,
+    }
+
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+
+    let blocked_check_ids = report
+        .preflight
+        .as_ref()
+        .map(|preflight| {
+            preflight
+                .checks
+                .iter()
+                .filter(|check| check.status == CheckStatus::Fail)
+                .map(|check| check.id.as_str())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+
+    let step_ids = report
+        .steps
+        .iter()
+        .map(|step| step.id.as_str())
+        .collect::<Vec<_>>();
+
+    let record = AuditRecord {
+        timestamp_unix_ms: SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis(),
+        action: report.action,
+        target: report.target,
+        outcome: report.outcome,
+        summary: &report.summary,
+        blocked_check_ids,
+        step_ids,
+    };
+
+    let mut file = OpenOptions::new().create(true).append(true).open(path)?;
+    writeln!(file, "{}", serde_json::to_string(&record)?)?;
+    Ok(())
+}
+
 fn probe_launch_agent(label: &str) -> LaunchAgentStatus {
     let output = run_command("launchctl", ["list"]);
     if !output.success {
@@ -155,10 +471,7 @@ fn probe_launch_agent(label: &str) -> LaunchAgentStatus {
             label: label.to_string(),
             loaded: false,
             running: false,
-            detail: format!(
-                "launchctl list failed: {}",
-                output.trim_or(&output.stdout)
-            ),
+            detail: format!("launchctl list failed: {}", output.trim_or(&output.stdout)),
         };
     }
 
@@ -193,22 +506,7 @@ fn probe_remote_service(config: &AppConfig) -> RemoteStatus {
             continue;
         }
 
-        let remote = format!("{}@{}", config.remote.ssh_user, host);
-        let command = format!("systemctl is-active {}", config.remote.onedrive_service);
-        let output = run_command(
-            "ssh",
-            [
-                "-o",
-                "BatchMode=yes",
-                "-o",
-                "ConnectTimeout=3",
-                "-i",
-                config.ssh_key_path.to_string_lossy().as_ref(),
-                remote.as_str(),
-                command.as_str(),
-            ],
-        );
-
+        let output = run_remote_service_state(config, host);
         let raw = output.stdout.trim();
         let service_state = match raw {
             "active" => ServiceState::Active,
@@ -257,6 +555,90 @@ fn ssh_reachable(config: &AppConfig, host: &str) -> bool {
         ],
     );
     output.success
+}
+
+fn run_remote_systemctl(config: &AppConfig, host: &str, action: &str) -> CommandOutput {
+    let primary = run_remote_systemctl_raw(config, host, action);
+    if primary.success {
+        return primary;
+    }
+
+    let remote = format!("{}@{}", config.remote.ssh_user, host);
+    let command = format!("systemctl {} {}", action, config.remote.onedrive_service);
+    let fallback = run_command(
+        "ssh",
+        [
+            "-o",
+            "BatchMode=yes",
+            "-o",
+            "ConnectTimeout=5",
+            "-i",
+            config.ssh_key_path.to_string_lossy().as_ref(),
+            remote.as_str(),
+            command.as_str(),
+        ],
+    );
+
+    if fallback.success {
+        fallback
+    } else {
+        CommandOutput {
+            success: false,
+            stdout: String::new(),
+            stderr: format!(
+                "sudo path: {}; direct path: {}",
+                primary.trim_or(&primary.stdout),
+                fallback.trim_or(&fallback.stdout)
+            ),
+        }
+    }
+}
+
+fn run_remote_systemctl_raw(config: &AppConfig, host: &str, action: &str) -> CommandOutput {
+    let remote = format!("{}@{}", config.remote.ssh_user, host);
+    let command = format!("sudo -n systemctl {} {}", action, config.remote.onedrive_service);
+    run_command(
+        "ssh",
+        [
+            "-o",
+            "BatchMode=yes",
+            "-o",
+            "ConnectTimeout=5",
+            "-i",
+            config.ssh_key_path.to_string_lossy().as_ref(),
+            remote.as_str(),
+            command.as_str(),
+        ],
+    )
+}
+
+fn run_remote_service_state(config: &AppConfig, host: &str) -> CommandOutput {
+    let primary = run_remote_systemctl_raw(config, host, "is-active");
+    if primary.success || !primary.stdout.trim().is_empty() {
+        return primary;
+    }
+
+    let remote = format!("{}@{}", config.remote.ssh_user, host);
+    let command = format!("systemctl is-active {}", config.remote.onedrive_service);
+    let fallback = run_command(
+        "ssh",
+        [
+            "-o",
+            "BatchMode=yes",
+            "-o",
+            "ConnectTimeout=5",
+            "-i",
+            config.ssh_key_path.to_string_lossy().as_ref(),
+            remote.as_str(),
+            command.as_str(),
+        ],
+    );
+
+    if fallback.success || !fallback.stdout.trim().is_empty() {
+        fallback
+    } else {
+        primary
+    }
 }
 
 fn scan_artifacts(config: &AppConfig) -> ArtifactReport {
@@ -335,8 +717,9 @@ fn latest_log_path(log_dir: &Path) -> Option<PathBuf> {
 
 fn analyze_log_contents(path: PathBuf, contents: &str, max_examples: usize) -> LogSummary {
     let warning_count = contents.matches("WARNING:").count();
-    let error_count =
-        contents.matches("ERROR:").count() + contents.matches("ERROR :").count() + contents.matches("Fatal error").count();
+    let error_count = contents.matches("ERROR:").count()
+        + contents.matches("ERROR :").count()
+        + contents.matches("Fatal error").count();
     let out_of_sync_count = contents.matches("out of sync").count();
     let last_started_line = contents
         .lines()
@@ -398,6 +781,88 @@ fn fail_check(id: &str, summary: String, detail: String) -> PreflightCheck {
     }
 }
 
+fn applied_step(id: &str, summary: String, detail: String) -> ActionStep {
+    ActionStep {
+        id: id.to_string(),
+        status: ActionStepStatus::Applied,
+        summary,
+        detail,
+    }
+}
+
+fn skipped_step(id: &str, summary: String, detail: String) -> ActionStep {
+    ActionStep {
+        id: id.to_string(),
+        status: ActionStepStatus::Skipped,
+        summary,
+        detail,
+    }
+}
+
+fn blocked_step(id: &str, summary: String, detail: String) -> ActionStep {
+    ActionStep {
+        id: id.to_string(),
+        status: ActionStepStatus::Blocked,
+        summary,
+        detail,
+    }
+}
+
+fn failed_step(id: &str, summary: String, detail: String) -> ActionStep {
+    ActionStep {
+        id: id.to_string(),
+        status: ActionStepStatus::Failed,
+        summary,
+        detail,
+    }
+}
+
+fn summarize_outcome(steps: &[ActionStep]) -> ActionOutcome {
+    if steps.iter().any(|step| step.status == ActionStepStatus::Failed) {
+        ActionOutcome::Failed
+    } else if steps.iter().all(|step| step.status == ActionStepStatus::Skipped) {
+        ActionOutcome::NoOp
+    } else {
+        ActionOutcome::Success
+    }
+}
+
+fn summarize_control_action(
+    action: ControlAction,
+    target: ActionTarget,
+    outcome: ActionOutcome,
+    steps: &[ActionStep],
+) -> String {
+    let target_name = target.label();
+    let action_name = action_name(action);
+    match outcome {
+        ActionOutcome::Success => {
+            let applied = steps
+                .iter()
+                .filter(|step| step.status == ActionStepStatus::Applied)
+                .count();
+            format!("{action_name} succeeded for {target_name} ({applied} applied steps)")
+        }
+        ActionOutcome::NoOp => format!("nothing changed; {target_name} was already {action_name}d"),
+        ActionOutcome::Blocked => format!("{action_name} blocked for {target_name}"),
+        ActionOutcome::Failed => format!("{action_name} completed with failures for {target_name}"),
+    }
+}
+
+fn failed_check_ids(report: &PreflightReport) -> String {
+    let failed = report
+        .checks
+        .iter()
+        .filter(|check| check.status == CheckStatus::Fail)
+        .map(|check| check.id.as_str())
+        .collect::<Vec<_>>();
+    if failed.is_empty() {
+        "preflight did not expose specific failed checks".to_string()
+    } else {
+        failed.join(", ")
+    }
+}
+
 fn format_examples(examples: &[PathBuf]) -> String {
     if examples.is_empty() {
         "no example paths recorded".to_string()
@@ -407,6 +872,23 @@ fn format_examples(examples: &[PathBuf]) -> String {
             .map(|path| path.display().to_string())
             .collect::<Vec<_>>()
             .join("; ")
+    }
+}
+
+fn action_name(action: ControlAction) -> &'static str {
+    match action {
+        ControlAction::Pause => "pause",
+        ControlAction::Resume => "resume",
+    }
+}
+
+fn current_uid() -> String {
+    let output = run_command("id", ["-u"]);
+    let uid = output.stdout.trim();
+    if output.success && !uid.is_empty() {
+        uid.to_string()
+    } else {
+        "0".to_string()
     }
 }
 
@@ -446,9 +928,28 @@ where
     }
 }
 
+impl ActionTarget {
+    fn includes_local(self) -> bool {
+        matches!(self, Self::Local | Self::All)
+    }
+
+    fn includes_remote(self) -> bool {
+        matches!(self, Self::Remote | Self::All)
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Local => "local",
+            Self::Remote => "remote",
+            Self::All => "all targets",
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::analyze_log_contents;
+    use super::{ActionOutcome, ActionStepStatus, analyze_log_contents, summarize_outcome};
+    use crate::model::ActionStep;
     use std::path::PathBuf;
 
     #[test]
@@ -470,5 +971,39 @@ path1 and path2 are out of sync, run --resync to recover\n\
         assert!(summary.last_started_line.is_some());
         assert!(summary.last_completed_line.is_some());
         assert_eq!(summary.issue_examples.len(), 3);
+    }
+
+    #[test]
+    fn summarize_outcome_detects_blocking_failures() {
+        let failed = summarize_outcome(&[ActionStep {
+            id: "x".to_string(),
+            status: ActionStepStatus::Failed,
+            summary: "failed".to_string(),
+            detail: "detail".to_string(),
+        }]);
+        let noop = summarize_outcome(&[ActionStep {
+            id: "x".to_string(),
+            status: ActionStepStatus::Skipped,
+            summary: "skipped".to_string(),
+            detail: "detail".to_string(),
+        }]);
+        let success = summarize_outcome(&[
+            ActionStep {
+                id: "x".to_string(),
+                status: ActionStepStatus::Applied,
+                summary: "applied".to_string(),
+                detail: "detail".to_string(),
+            },
+            ActionStep {
+                id: "y".to_string(),
+                status: ActionStepStatus::Skipped,
+                summary: "skipped".to_string(),
+                detail: "detail".to_string(),
+            },
+        ]);
+
+        assert_eq!(failed, ActionOutcome::Failed);
+        assert_eq!(noop, ActionOutcome::NoOp);
+        assert_eq!(success, ActionOutcome::Success);
     }
 }
