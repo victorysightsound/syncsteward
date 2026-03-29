@@ -14,6 +14,8 @@ pub struct AppConfig {
     pub ssh_key_path: PathBuf,
     #[serde(default = "default_audit_log_path")]
     pub audit_log_path: PathBuf,
+    #[serde(default = "default_state_path")]
+    pub state_path: PathBuf,
     pub remote: RemoteConfig,
     pub scan: ScanConfig,
     #[serde(default)]
@@ -116,6 +118,7 @@ impl Default for AppConfig {
             rclone_log_dir: PathBuf::from("~/.config/rclone/logs"),
             ssh_key_path: PathBuf::from("~/.ssh/id_ed25519"),
             audit_log_path: default_audit_log_path(),
+            state_path: default_state_path(),
             remote: RemoteConfig {
                 ssh_user: "john".to_string(),
                 preferred_hosts: vec!["192.168.77.135".to_string(), "192.168.195.155".to_string()],
@@ -139,12 +142,20 @@ fn default_audit_log_path() -> PathBuf {
     PathBuf::from("~/.local/state/syncsteward/audit.jsonl")
 }
 
+fn default_state_path() -> PathBuf {
+    PathBuf::from("~/.local/state/syncsteward/state.json")
+}
+
 fn default_file_class_policies() -> Vec<FileClassPolicy> {
     vec![
         FileClassPolicy {
             class: FileClass::Database,
             mode: PolicyMode::BackupOnly,
-            patterns: vec!["*.db".to_string(), "*.sqlite".to_string(), "*.sqlite3".to_string()],
+            patterns: vec![
+                "*.db".to_string(),
+                "*.sqlite".to_string(),
+                "*.sqlite3".to_string(),
+            ],
         },
         FileClassPolicy {
             class: FileClass::SqliteWal,
@@ -205,8 +216,8 @@ pub fn default_config_path() -> PathBuf {
 }
 
 fn read_config(path: &Path) -> Result<AppConfig> {
-    let raw = fs::read_to_string(path)
-        .with_context(|| format!("read config at {}", path.display()))?;
+    let raw =
+        fs::read_to_string(path).with_context(|| format!("read config at {}", path.display()))?;
     let parsed: AppConfig =
         toml::from_str(&raw).with_context(|| format!("parse config at {}", path.display()))?;
     normalize_config(parsed)
@@ -218,6 +229,7 @@ fn normalize_config(mut config: AppConfig) -> Result<AppConfig> {
     config.rclone_log_dir = expand_path(&config.rclone_log_dir);
     config.ssh_key_path = expand_path(&config.ssh_key_path);
     config.audit_log_path = expand_path(&config.audit_log_path);
+    config.state_path = expand_path(&config.state_path);
     config.scan.roots = config
         .scan
         .roots

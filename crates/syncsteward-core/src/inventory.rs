@@ -10,7 +10,7 @@ pub fn targets(config_path: Option<&Path>) -> Result<SyncTargetInventoryReport> 
     Ok(report)
 }
 
-fn build_target_inventory(
+pub(crate) fn build_target_inventory(
     config: &AppConfig,
     config_source: String,
 ) -> Result<SyncTargetInventoryReport> {
@@ -26,7 +26,11 @@ fn build_target_inventory(
     let mut targets = Vec::new();
 
     for folder in bisync_folders {
-        let local_path = PathBuf::from(format!("{}/{}", std::env::var("HOME").unwrap_or_default(), folder));
+        let local_path = PathBuf::from(format!(
+            "{}/{}",
+            std::env::var("HOME").unwrap_or_default(),
+            folder
+        ));
         let (recommended_mode, rationale) =
             recommend_policy(&folder, LegacySyncMode::Bisync, &local_path);
         targets.push(SyncTargetRecord {
@@ -44,8 +48,11 @@ fn build_target_inventory(
         let (local_name, remote_name) = mapping
             .split_once(':')
             .ok_or_else(|| anyhow::anyhow!("invalid BACKUP_FOLDERS mapping: {mapping}"))?;
-        let local_path =
-            PathBuf::from(format!("{}/{}", std::env::var("HOME").unwrap_or_default(), local_name));
+        let local_path = PathBuf::from(format!(
+            "{}/{}",
+            std::env::var("HOME").unwrap_or_default(),
+            local_name
+        ));
         let (recommended_mode, rationale) =
             recommend_policy(local_name, LegacySyncMode::BackupOneWay, &local_path);
         targets.push(SyncTargetRecord {
@@ -90,14 +97,19 @@ fn parse_array(contents: &str, array_name: &str) -> Result<Vec<String>> {
         let unquoted = line
             .strip_prefix('"')
             .and_then(|line| line.strip_suffix('"'))
-            .or_else(|| line.strip_prefix('\'').and_then(|line| line.strip_suffix('\'')))
+            .or_else(|| {
+                line.strip_prefix('\'')
+                    .and_then(|line| line.strip_suffix('\''))
+            })
             .unwrap_or(line);
 
         let value = unquoted
             .split_whitespace()
             .next()
             .filter(|value| !value.is_empty())
-            .ok_or_else(|| anyhow::anyhow!("could not parse {array_name} entry from line: {line}"))?;
+            .ok_or_else(|| {
+                anyhow::anyhow!("could not parse {array_name} entry from line: {line}")
+            })?;
 
         entries.push(value.to_string());
     }
@@ -132,7 +144,11 @@ fn strip_shell_comment(line: &str) -> String {
     result
 }
 
-fn recommend_policy(name: &str, legacy_mode: LegacySyncMode, local_path: &Path) -> (PolicyMode, &'static str) {
+fn recommend_policy(
+    name: &str,
+    legacy_mode: LegacySyncMode,
+    local_path: &Path,
+) -> (PolicyMode, &'static str) {
     match name {
         ".memloft" | "_hub" => (
             PolicyMode::BackupOnly,
@@ -158,10 +174,13 @@ fn recommend_policy(name: &str, legacy_mode: LegacySyncMode, local_path: &Path) 
         _ if local_path
             .extension()
             .and_then(|value| value.to_str())
-            .is_some_and(|ext| matches!(ext, "app" | "pkg")) => (
-            PolicyMode::Excluded,
-            "Bundle/package-style targets should not be managed by broad bidirectional sync.",
-        ),
+            .is_some_and(|ext| matches!(ext, "app" | "pkg")) =>
+        {
+            (
+                PolicyMode::Excluded,
+                "Bundle/package-style targets should not be managed by broad bidirectional sync.",
+            )
+        }
         _ => (
             PolicyMode::Hold,
             "Default to hold until this target is explicitly classified and validated.",

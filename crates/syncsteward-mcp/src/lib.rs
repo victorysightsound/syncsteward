@@ -6,8 +6,9 @@ use rmcp::{
 };
 use std::path::PathBuf;
 use syncsteward_core::{
-    ActionTarget, ControlReport, PreflightReport, StatusReport, SyncTargetInventoryReport, pause,
-    preflight, resume, status, targets,
+    ActionTarget, ConfigScaffoldReport, ControlReport, LogAcknowledgeReport, PreflightReport,
+    StatusReport, SyncTargetInventoryReport, acknowledge_latest_log as core_acknowledge_latest_log,
+    pause, preflight, resume, scaffold_config as core_scaffold_config, status, targets,
 };
 
 type McpResult<T> = Result<Json<T>, String>;
@@ -74,7 +75,50 @@ impl SyncStewardMcpServer {
         Ok(Json(report))
     }
 
-    #[tool(description = "Pause both the local launch agent and the remote OneDrive service. This is safe to run repeatedly.")]
+    #[tool(
+        description = "Acknowledge the current latest rclone log as historical baseline state after cleanup, so preflight can distinguish old known incidents from new failures."
+    )]
+    async fn acknowledge_latest_log(&self) -> McpResult<LogAcknowledgeReport> {
+        let config_path = self.config_path.clone();
+        let report = tokio::task::spawn_blocking(move || {
+            core_acknowledge_latest_log(config_path.as_deref())
+        })
+        .await
+        .map_err(|error| error.to_string())?
+        .map_err(|error| error.to_string())?;
+        Ok(Json(report))
+    }
+
+    #[tool(
+        description = "Write a SyncSteward config scaffold from the current target inventory and recommended per-folder policies."
+    )]
+    async fn scaffold_config(&self) -> McpResult<ConfigScaffoldReport> {
+        let config_path = self.config_path.clone();
+        let report = tokio::task::spawn_blocking(move || {
+            core_scaffold_config(config_path.as_deref(), false)
+        })
+        .await
+        .map_err(|error| error.to_string())?
+        .map_err(|error| error.to_string())?;
+        Ok(Json(report))
+    }
+
+    #[tool(
+        description = "Force-write a SyncSteward config scaffold from the current target inventory and recommended per-folder policies, replacing any existing config file."
+    )]
+    async fn scaffold_config_force(&self) -> McpResult<ConfigScaffoldReport> {
+        let config_path = self.config_path.clone();
+        let report =
+            tokio::task::spawn_blocking(move || core_scaffold_config(config_path.as_deref(), true))
+                .await
+                .map_err(|error| error.to_string())?
+                .map_err(|error| error.to_string())?;
+        Ok(Json(report))
+    }
+
+    #[tool(
+        description = "Pause both the local launch agent and the remote OneDrive service. This is safe to run repeatedly."
+    )]
     async fn pause_all(&self) -> McpResult<ControlReport> {
         self.run_control(ActionTarget::All, pause).await
     }
@@ -89,17 +133,23 @@ impl SyncStewardMcpServer {
         self.run_control(ActionTarget::Remote, pause).await
     }
 
-    #[tool(description = "Resume both the local launch agent and the remote OneDrive service. This stays blocked until preflight succeeds.")]
+    #[tool(
+        description = "Resume both the local launch agent and the remote OneDrive service. This stays blocked until preflight succeeds."
+    )]
     async fn resume_all(&self) -> McpResult<ControlReport> {
         self.run_control(ActionTarget::All, resume).await
     }
 
-    #[tool(description = "Resume only the local launch agent. This stays blocked until preflight succeeds.")]
+    #[tool(
+        description = "Resume only the local launch agent. This stays blocked until preflight succeeds."
+    )]
     async fn resume_local(&self) -> McpResult<ControlReport> {
         self.run_control(ActionTarget::Local, resume).await
     }
 
-    #[tool(description = "Resume only the remote OneDrive service. This stays blocked until preflight succeeds.")]
+    #[tool(
+        description = "Resume only the remote OneDrive service. This stays blocked until preflight succeeds."
+    )]
     async fn resume_remote(&self) -> McpResult<ControlReport> {
         self.run_control(ActionTarget::Remote, resume).await
     }
@@ -129,14 +179,15 @@ impl SyncStewardMcpServer {
     async fn run_control(
         &self,
         target: ActionTarget,
-        operation: fn(Option<&std::path::Path>, ActionTarget) -> Result<ControlReport, anyhow::Error>,
+        operation: fn(
+            Option<&std::path::Path>,
+            ActionTarget,
+        ) -> Result<ControlReport, anyhow::Error>,
     ) -> McpResult<ControlReport> {
         let config_path = self.config_path.clone();
         let handle = tokio::task::spawn_blocking(move || operation(config_path.as_deref(), target));
-        let report: Result<ControlReport, anyhow::Error> = handle
-            .await
-            .map_err(|error| error.to_string())?
-            ;
+        let report: Result<ControlReport, anyhow::Error> =
+            handle.await.map_err(|error| error.to_string())?;
         let report = report.map_err(|error| error.to_string())?;
         Ok(Json(report))
     }

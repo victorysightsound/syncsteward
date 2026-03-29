@@ -10,6 +10,7 @@ pub struct StatusReport {
     pub launch_agent: LaunchAgentStatus,
     pub remote: RemoteStatus,
     pub artifacts: ArtifactReport,
+    pub acknowledged_log: Option<AcknowledgedLogSummary>,
     pub latest_log: Option<LogSummary>,
 }
 
@@ -90,6 +91,17 @@ pub struct LogSummary {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct AcknowledgedLogSummary {
+    pub path: PathBuf,
+    pub warning_count: usize,
+    pub error_count: usize,
+    pub out_of_sync_count: usize,
+    pub last_started_line: Option<String>,
+    pub last_completed_line: Option<String>,
+    pub acknowledged_at_unix_ms: u128,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct PreflightReport {
     pub ready: bool,
     pub checks: Vec<PreflightCheck>,
@@ -153,6 +165,25 @@ pub struct ActionStep {
     pub status: ActionStepStatus,
     pub summary: String,
     pub detail: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct LogAcknowledgeReport {
+    pub outcome: ActionOutcome,
+    pub summary: String,
+    pub state_path: PathBuf,
+    pub acknowledged_log: Option<AcknowledgedLogSummary>,
+    pub latest_log: Option<LogSummary>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ConfigScaffoldReport {
+    pub outcome: ActionOutcome,
+    pub summary: String,
+    pub path: PathBuf,
+    pub overwritten: bool,
+    pub folder_policy_count: usize,
+    pub file_class_policy_count: usize,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]

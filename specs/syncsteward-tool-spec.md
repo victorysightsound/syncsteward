@@ -69,6 +69,43 @@ Supports:
 - human output
 - JSON output
 
+### `syncsteward acknowledge-latest-log`
+
+Record the current latest `rclone` log as an acknowledged historical baseline after cleanup.
+
+Rules:
+
+- only intended for known historical incidents
+- allows preflight to distinguish old acknowledged failures from new failures
+- stores the acknowledgement in SyncSteward state, not in the log itself
+
+Supports:
+
+- human output
+- JSON output
+
+### `syncsteward scaffold-config`
+
+Write a real SyncSteward config file from the current target inventory and recommended policies.
+
+Outputs:
+
+- config path
+- whether an existing file was overwritten
+- folder policy count
+- file-class policy count
+
+Rules:
+
+- refuses to overwrite by default
+- `--force` is required to replace an existing config
+- uses existing configured folder modes when refreshing an existing config
+
+Supports:
+
+- human output
+- JSON output
+
 ### `syncsteward pause`
 
 Pause:
@@ -128,6 +165,14 @@ Run the same guarded preflight checks exposed by the CLI.
 ### `targets`
 
 Read the same legacy-target inventory and recommended policy view exposed by the CLI.
+
+### `acknowledge_latest_log`
+
+Record the same historical-log baseline acknowledgement exposed by the CLI.
+
+### `scaffold_config`, `scaffold_config_force`
+
+Write the same config scaffold exposed by the CLI, with a separate force-overwrite variant for MCP.
 
 ### `pause_all`, `pause_local`, `pause_remote`
 

@@ -7,6 +7,7 @@ The current wave focuses on three things:
 - make the current sync state observable before anything is re-enabled
 - give both CLI and MCP surfaces the same guarded health and preflight view
 - add explicit pause and resume controls that stay fail-closed
+- turn the current target inventory into an explicit managed config before re-enablement
 
 ## Current Scope
 
@@ -20,6 +21,8 @@ SyncSteward does not restart sync automatically. The current build exposes:
 - explicit `pause` and guarded `resume`
 - backup-only defaults for live SQLite database files and sidecars
 - target inventory from the current `cloud-sync.sh` with safer recommended policies
+- explicit acknowledgement of a historical incident log after cleanup
+- config scaffolding so recommended folder policies become a real SyncSteward config file
 
 ## Interfaces
 
@@ -34,6 +37,8 @@ UI comes later, after the CLI and MCP surfaces are stable.
 cargo run -p syncsteward-cli -- status
 cargo run -p syncsteward-cli -- preflight
 cargo run -p syncsteward-cli -- targets
+cargo run -p syncsteward-cli -- acknowledge-latest-log
+cargo run -p syncsteward-cli -- scaffold-config
 cargo run -p syncsteward-cli -- pause --target all
 cargo run -p syncsteward-cli -- resume --target all
 cargo run -p syncsteward-cli -- status --json

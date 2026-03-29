@@ -1,9 +1,12 @@
-use crate::config::{AppConfig, load_config};
+use crate::config::{AppConfig, FolderPolicy, default_config_path, expand_path, load_config};
+use crate::inventory::build_target_inventory;
 use crate::model::{
     ActionOutcome, ActionStep, ActionStepStatus, ActionTarget, ArtifactReport, CheckStatus,
-    ControlAction, ControlReport, LaunchAgentStatus, LogSummary, PolicySummary, PreflightCheck,
-    PreflightReport, RemoteStatus, ServiceState, StatusReport,
+    ConfigScaffoldReport, ControlAction, ControlReport, LaunchAgentStatus, LogAcknowledgeReport,
+    LogSummary, PolicySummary, PreflightCheck, PreflightReport, RemoteStatus, ServiceState,
+    StatusReport,
 };
+use crate::state::{load_state, matches_acknowledged_log, save_acknowledged_log};
 use anyhow::Result;
 use serde::Serialize;
 use std::fs::{self, OpenOptions};
@@ -40,7 +43,94 @@ pub fn resume(config_path: Option<&Path>, target: ActionTarget) -> Result<Contro
     Ok(report)
 }
 
+pub fn acknowledge_latest_log(config_path: Option<&Path>) -> Result<LogAcknowledgeReport> {
+    let loaded = load_config(config_path)?;
+    let status = collect_status(&loaded.config, loaded.source.description());
+    let latest_log = status.latest_log.clone();
+
+    let Some(log) = latest_log.clone() else {
+        return Ok(LogAcknowledgeReport {
+            outcome: ActionOutcome::NoOp,
+            summary: "no rclone log found to acknowledge".to_string(),
+            state_path: loaded.config.state_path.clone(),
+            acknowledged_log: status.acknowledged_log,
+            latest_log: None,
+        });
+    };
+
+    let acknowledged_log = save_acknowledged_log(&loaded.config.state_path, &log)?;
+    Ok(LogAcknowledgeReport {
+        outcome: ActionOutcome::Success,
+        summary: format!(
+            "acknowledged {} as the historical baseline log",
+            log.path.display()
+        ),
+        state_path: loaded.config.state_path.clone(),
+        acknowledged_log: Some(acknowledged_log),
+        latest_log: Some(log),
+    })
+}
+
+pub fn scaffold_config(config_path: Option<&Path>, force: bool) -> Result<ConfigScaffoldReport> {
+    let output_path = config_path
+        .map(expand_path)
+        .unwrap_or_else(default_config_path);
+    let overwrite = output_path.exists();
+    if overwrite && !force {
+        anyhow::bail!(
+            "config already exists at {} (use --force to overwrite)",
+            output_path.display()
+        );
+    }
+
+    let loaded = if overwrite {
+        load_config(Some(output_path.as_path()))?
+    } else {
+        load_config(None)?
+    };
+    let inventory = build_target_inventory(&loaded.config, loaded.source.description())?;
+
+    let mut config = loaded.config;
+    config.policy.folders = inventory
+        .targets
+        .into_iter()
+        .map(|target| FolderPolicy {
+            path: target.local_path,
+            mode: target.configured_mode.unwrap_or(target.recommended_mode),
+            label: Some(target.name),
+        })
+        .collect();
+
+    let encoded = toml::to_string_pretty(&config)?;
+    if let Some(parent) = output_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(&output_path, encoded)?;
+
+    Ok(ConfigScaffoldReport {
+        outcome: ActionOutcome::Success,
+        summary: if overwrite {
+            format!(
+                "updated SyncSteward config scaffold at {}",
+                output_path.display()
+            )
+        } else {
+            format!(
+                "wrote SyncSteward config scaffold to {}",
+                output_path.display()
+            )
+        },
+        path: output_path,
+        overwritten: overwrite,
+        folder_policy_count: config.policy.folders.len(),
+        file_class_policy_count: config.policy.file_classes.len(),
+    })
+}
+
 fn collect_status(config: &AppConfig, config_source: String) -> StatusReport {
+    let acknowledged_log = load_state(&config.state_path)
+        .ok()
+        .and_then(|state| state.acknowledged_log);
     let launch_agent = probe_launch_agent(&config.launch_agent_label);
     let remote = probe_remote_service(config);
     let artifacts = scan_artifacts(config);
@@ -56,6 +146,7 @@ fn collect_status(config: &AppConfig, config_source: String) -> StatusReport {
         launch_agent,
         remote,
         artifacts,
+        acknowledged_log,
         latest_log,
     }
 }
@@ -135,6 +226,17 @@ fn evaluate_preflight(status: StatusReport) -> PreflightReport {
     });
 
     checks.push(match &status.latest_log {
+        Some(log) if matches_acknowledged_log(status.acknowledged_log.as_ref(), log) => warn_check(
+            "latest_log_clean",
+            "latest rclone log issues are acknowledged as historical baseline".to_string(),
+            format!(
+                "{} out_of_sync, {} errors, {} warnings in {}",
+                log.out_of_sync_count,
+                log.error_count,
+                log.warning_count,
+                log.path.display()
+            ),
+        ),
         Some(log) if log.out_of_sync_count > 0 || log.error_count > 0 => fail_check(
             "latest_log_clean",
             "latest rclone log still reports out-of-sync or error conditions".to_string(),
@@ -347,7 +449,10 @@ fn pause_remote_onedrive(config: &AppConfig) -> ActionStep {
     } else {
         failed_step(
             "pause_remote_onedrive",
-            format!("failed to pause {} on {}", config.remote.onedrive_service, host),
+            format!(
+                "failed to pause {} on {}",
+                config.remote.onedrive_service, host
+            ),
             stop.trim_or(&stop.stdout).to_string(),
         )
     }
@@ -363,7 +468,12 @@ fn resume_remote_onedrive(config: &AppConfig) -> ActionStep {
         );
     }
     let Some(host) = remote.selected_host.as_deref() else {
-        let fallback_host = config.remote.preferred_hosts.first().cloned().unwrap_or_default();
+        let fallback_host = config
+            .remote
+            .preferred_hosts
+            .first()
+            .cloned()
+            .unwrap_or_default();
         if fallback_host.is_empty() {
             return failed_step(
                 "resume_remote_onedrive",
@@ -388,7 +498,10 @@ fn resume_remote_onedrive_on_host(config: &AppConfig, host: &str) -> ActionStep 
     } else {
         failed_step(
             "resume_remote_onedrive",
-            format!("failed to resume {} on {}", config.remote.onedrive_service, host),
+            format!(
+                "failed to resume {} on {}",
+                config.remote.onedrive_service, host
+            ),
             start.trim_or(&start.stdout).to_string(),
         )
     }
@@ -407,7 +520,8 @@ fn record_audit_event(config: &AppConfig, report: &mut ControlReport) {
         if report.outcome != ActionOutcome::Blocked {
             report.outcome = ActionOutcome::Failed;
         }
-        report.summary = summarize_control_action(report.action, report.target, report.outcome, &report.steps);
+        report.summary =
+            summarize_control_action(report.action, report.target, report.outcome, &report.steps);
     }
 }
 
@@ -596,7 +710,10 @@ fn run_remote_systemctl(config: &AppConfig, host: &str, action: &str) -> Command
 
 fn run_remote_systemctl_raw(config: &AppConfig, host: &str, action: &str) -> CommandOutput {
     let remote = format!("{}@{}", config.remote.ssh_user, host);
-    let command = format!("sudo -n systemctl {} {}", action, config.remote.onedrive_service);
+    let command = format!(
+        "sudo -n systemctl {} {}",
+        action, config.remote.onedrive_service
+    );
     run_command(
         "ssh",
         [
@@ -818,9 +935,15 @@ fn failed_step(id: &str, summary: String, detail: String) -> ActionStep {
 }
 
 fn summarize_outcome(steps: &[ActionStep]) -> ActionOutcome {
-    if steps.iter().any(|step| step.status == ActionStepStatus::Failed) {
+    if steps
+        .iter()
+        .any(|step| step.status == ActionStepStatus::Failed)
+    {
         ActionOutcome::Failed
-    } else if steps.iter().all(|step| step.status == ActionStepStatus::Skipped) {
+    } else if steps
+        .iter()
+        .all(|step| step.status == ActionStepStatus::Skipped)
+    {
         ActionOutcome::NoOp
     } else {
         ActionOutcome::Success
@@ -948,8 +1071,15 @@ impl ActionTarget {
 
 #[cfg(test)]
 mod tests {
-    use super::{ActionOutcome, ActionStepStatus, analyze_log_contents, summarize_outcome};
-    use crate::model::ActionStep;
+    use super::{
+        ActionOutcome, ActionStepStatus, analyze_log_contents, evaluate_preflight,
+        summarize_outcome,
+    };
+    use crate::config::PolicyConfig;
+    use crate::model::{
+        AcknowledgedLogSummary, ActionStep, ArtifactReport, CheckStatus, LaunchAgentStatus,
+        PolicySummary, RemoteStatus, ServiceState, StatusReport,
+    };
     use std::path::PathBuf;
 
     #[test]
@@ -1005,5 +1135,64 @@ path1 and path2 are out of sync, run --resync to recover\n\
         assert_eq!(failed, ActionOutcome::Failed);
         assert_eq!(noop, ActionOutcome::NoOp);
         assert_eq!(success, ActionOutcome::Success);
+    }
+
+    #[test]
+    fn acknowledged_latest_log_downgrades_log_blocker_to_warning() {
+        let latest_log = analyze_log_contents(
+            PathBuf::from("/tmp/sync-2026-03-29.log"),
+            "\
+[2026-03-29 10:00:00] ========== Cloud Sync Started ==========\n\
+[2026-03-29 10:00:01] WARNING: Ministry had issues\n\
+path1 and path2 are out of sync, run --resync to recover\n\
+[2026-03-29 10:00:05] ERROR: neither remote is reachable\n\
+[2026-03-29 10:05:00] ========== Cloud Sync Completed ==========\n",
+            5,
+        );
+        let acknowledged_log = AcknowledgedLogSummary {
+            path: latest_log.path.clone(),
+            warning_count: latest_log.warning_count,
+            error_count: latest_log.error_count,
+            out_of_sync_count: latest_log.out_of_sync_count,
+            last_started_line: latest_log.last_started_line.clone(),
+            last_completed_line: latest_log.last_completed_line.clone(),
+            acknowledged_at_unix_ms: 1,
+        };
+        let report = evaluate_preflight(StatusReport {
+            config_source: "test".to_string(),
+            policy: PolicySummary {
+                folder_policies: Vec::new(),
+                file_class_policies: PolicyConfig::default().file_classes,
+            },
+            launch_agent: LaunchAgentStatus {
+                label: "com.example.test".to_string(),
+                loaded: false,
+                running: false,
+                detail: "not loaded".to_string(),
+            },
+            remote: RemoteStatus {
+                selected_host: Some("127.0.0.1".to_string()),
+                reachable: true,
+                service_state: ServiceState::Inactive,
+                detail: "inactive".to_string(),
+            },
+            artifacts: ArtifactReport {
+                roots_scanned: Vec::new(),
+                conflict_count: 0,
+                conflict_examples: Vec::new(),
+                safe_backup_count: 0,
+                safe_backup_examples: Vec::new(),
+            },
+            acknowledged_log: Some(acknowledged_log),
+            latest_log: Some(latest_log),
+        });
+
+        assert!(report.ready);
+        let check = report
+            .checks
+            .iter()
+            .find(|check| check.id == "latest_log_clean")
+            .expect("latest_log_clean");
+        assert_eq!(check.status, CheckStatus::Warn);
     }
 }

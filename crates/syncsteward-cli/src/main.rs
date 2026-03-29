@@ -1,13 +1,17 @@
 use clap::{Parser, Subcommand, ValueEnum};
 use std::path::PathBuf;
 use syncsteward_core::{
-    ActionOutcome, ActionStepStatus, ActionTarget, CheckStatus, ControlReport, PolicyMode,
-    PreflightReport, StatusReport, SyncTargetInventoryReport, pause, preflight, resume, status,
-    targets,
+    ActionOutcome, ActionStepStatus, ActionTarget, CheckStatus, ConfigScaffoldReport,
+    ControlReport, LogAcknowledgeReport, PolicyMode, PreflightReport, StatusReport,
+    SyncTargetInventoryReport, acknowledge_latest_log, pause, preflight, resume, scaffold_config,
+    status, targets,
 };
 
 #[derive(Debug, Parser)]
-#[command(name = "syncsteward", about = "Safety-first sync health and preflight control")]
+#[command(
+    name = "syncsteward",
+    about = "Safety-first sync health and preflight control"
+)]
 struct Cli {
     #[arg(long, global = true)]
     config: Option<PathBuf>,
@@ -30,6 +34,18 @@ enum Command {
     },
     /// Read the legacy sync targets from the current cloud-sync script and show the safer recommended policy for each one.
     Targets {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Acknowledge the latest rclone log as historical baseline state.
+    AcknowledgeLatestLog {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Write a SyncSteward config scaffold from the current target inventory.
+    ScaffoldConfig {
+        #[arg(long)]
+        force: bool,
         #[arg(long)]
         json: bool,
     },
@@ -117,6 +133,34 @@ fn run() -> i32 {
             }
             0
         }
+        Command::AcknowledgeLatestLog { json } => {
+            let report = match acknowledge_latest_log(cli.config.as_deref()) {
+                Ok(report) => report,
+                Err(error) => return fatal_error(&error.to_string()),
+            };
+            if json {
+                if print_json(&report).is_err() {
+                    return fatal_error("failed to serialize log acknowledgement report as JSON");
+                }
+            } else {
+                print_acknowledged_log(&report);
+            }
+            action_exit_code(report.outcome)
+        }
+        Command::ScaffoldConfig { force, json } => {
+            let report = match scaffold_config(cli.config.as_deref(), force) {
+                Ok(report) => report,
+                Err(error) => return fatal_error(&error.to_string()),
+            };
+            if json {
+                if print_json(&report).is_err() {
+                    return fatal_error("failed to serialize config scaffold report as JSON");
+                }
+            } else {
+                print_config_scaffold(&report);
+            }
+            action_exit_code(report.outcome)
+        }
         Command::Pause { target, json } => {
             let report = match pause(cli.config.as_deref(), target.into()) {
                 Ok(report) => report,
@@ -147,12 +191,10 @@ fn run() -> i32 {
         }
         Command::Mcp {
             command: McpCommand::Stdio,
-        } => {
-            match syncsteward_mcp::serve_stdio_blocking(cli.config) {
-                Ok(()) => 0,
-                Err(error) => fatal_error(&error),
-            }
-        }
+        } => match syncsteward_mcp::serve_stdio_blocking(cli.config) {
+            Ok(()) => 0,
+            Err(error) => fatal_error(&error),
+        },
     }
 }
 
@@ -214,6 +256,17 @@ fn print_status(report: &StatusReport) {
     );
     print_path_samples("Conflict samples", &report.artifacts.conflict_examples);
     print_path_samples("safeBackup samples", &report.artifacts.safe_backup_examples);
+    if let Some(acknowledged) = &report.acknowledged_log {
+        println!(
+            "Acknowledged log baseline: {} ({} errors, {} out-of-sync, {} warnings)",
+            acknowledged.path.display(),
+            acknowledged.error_count,
+            acknowledged.out_of_sync_count,
+            acknowledged.warning_count
+        );
+    } else {
+        println!("Acknowledged log baseline: none");
+    }
 
     if let Some(log) = &report.latest_log {
         println!(
@@ -304,6 +357,34 @@ fn print_targets(report: &SyncTargetInventoryReport) {
     }
 }
 
+fn print_acknowledged_log(report: &LogAcknowledgeReport) {
+    println!("SyncSteward Acknowledge Latest Log: {:?}", report.outcome);
+    println!("{}", report.summary);
+    println!("State path: {}", report.state_path.display());
+    if let Some(latest) = &report.latest_log {
+        println!("Latest log: {}", latest.path.display());
+    }
+    if let Some(acknowledged) = &report.acknowledged_log {
+        println!(
+            "Acknowledged: {} ({} errors, {} out-of-sync, {} warnings)",
+            acknowledged.path.display(),
+            acknowledged.error_count,
+            acknowledged.out_of_sync_count,
+            acknowledged.warning_count
+        );
+    }
+}
+
+fn print_config_scaffold(report: &ConfigScaffoldReport) {
+    println!("SyncSteward Config Scaffold: {:?}", report.outcome);
+    println!("{}", report.summary);
+    println!("Path: {}", report.path.display());
+    println!(
+        "Policies: {} folder overrides, {} file-class defaults",
+        report.folder_policy_count, report.file_class_policy_count
+    );
+}
+
 fn print_path_samples(title: &str, paths: &[PathBuf]) {
     if paths.is_empty() {
         return;
@@ -341,6 +422,14 @@ fn describe_step_status(status: ActionStepStatus) -> &'static str {
 
 fn control_exit_code(report: &ControlReport) -> i32 {
     match report.outcome {
+        ActionOutcome::Success | ActionOutcome::NoOp => 0,
+        ActionOutcome::Blocked => 2,
+        ActionOutcome::Failed => 1,
+    }
+}
+
+fn action_exit_code(outcome: ActionOutcome) -> i32 {
+    match outcome {
         ActionOutcome::Success | ActionOutcome::NoOp => 0,
         ActionOutcome::Blocked => 2,
         ActionOutcome::Failed => 1,

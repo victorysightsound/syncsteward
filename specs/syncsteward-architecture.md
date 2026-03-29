@@ -19,9 +19,11 @@ The app is responsible for:
 - sync health inspection
 - guarded preflight checks
 - conflict and backup artifact detection
+- explicit acknowledgement of historical incident logs after cleanup
 - sync orchestration policy
 - file-class safety defaults for risky artifacts like live SQLite databases
 - inventorying the current legacy sync targets before any re-enablement plan is applied
+- turning recommended target policies into an explicit managed config
 - notifications and failure escalation
 - future folder policy management and controlled re-enablement
 
@@ -60,7 +62,7 @@ SyncSteward loads configuration from either:
 Configuration now carries both operator paths and safety policy:
 
 - launch agent and remote service locations
-- log and audit-log paths
+- log, audit-log, and state paths
 - scan roots
 - folder policy overrides
 - file-class policy defaults
@@ -72,6 +74,7 @@ Status is a neutral snapshot of:
 - local sync writer state
 - remote sync writer state
 - drift artifact counts and examples
+- acknowledged historical log baseline, if one exists
 - latest sync log summary
 - active folder and file-class policy defaults
 
@@ -103,6 +106,8 @@ For each legacy target it should expose:
 - rationale for the recommendation
 - any explicit configured override that already exists
 
+SyncSteward should also be able to scaffold those recommendations into a real config file so re-enablement happens from explicit policy, not from built-in assumptions.
+
 ### Preflight
 
 Preflight is a policy decision layered on top of status. It should fail closed.
@@ -114,6 +119,8 @@ Examples of fail conditions:
 - unresolved conflict artifacts
 - unresolved `safeBackup` artifacts
 - latest `rclone` log still reports `out of sync`
+
+An acknowledged historical incident log may downgrade the latest-log blocker to a warning, but only when the exact latest log summary still matches the recorded baseline.
 
 ### Coordinated Control
 
@@ -128,6 +135,6 @@ Pause and resume are explicit control actions, not side effects of a timer.
 
 1. Health and preflight inspection
 2. Coordinated pause/resume and structured audit logging
-3. Per-folder sync policy, file-class overrides, and quarantine management
+3. Per-folder sync policy, config scaffolding, file-class overrides, and quarantine management
 4. Notifications and escalation
 5. Menu bar UI and operator workflow polish
