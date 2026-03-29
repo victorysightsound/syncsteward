@@ -150,7 +150,7 @@ fn recommend_policy(
     local_path: &Path,
 ) -> (PolicyMode, &'static str) {
     match name {
-        ".memloft" | "_hub" => (
+        ".memloft" => (
             PolicyMode::BackupOnly,
             "Runtime database and app-state folders should remain one-way backup only.",
         ),
@@ -212,7 +212,6 @@ BISYNC_FOLDERS=(
 
 BACKUP_FOLDERS=(
     ".memloft:.memloft"  # comment
-    "_hub:_hub"
 )
 "#;
 
@@ -220,6 +219,6 @@ BACKUP_FOLDERS=(
         let backup = parse_array(script, "BACKUP_FOLDERS").expect("backup");
 
         assert_eq!(bisync, vec!["Notes", "Desktop", "Books"]);
-        assert_eq!(backup, vec![".memloft:.memloft", "_hub:_hub"]);
+        assert_eq!(backup, vec![".memloft:.memloft"]);
     }
 }
