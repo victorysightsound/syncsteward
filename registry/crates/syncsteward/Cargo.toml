@@ -13,3 +13,5 @@ categories = ["command-line-utilities", "filesystem"]
 
 [lib]
 path = "src/lib.rs"
+
+[workspace]
