@@ -1,0 +1,7 @@
+Copyright (c) 2026 John Deaton
+
+All rights reserved.
+
+This package is published to reserve the `syncsteward` crate name for the
+upcoming SyncSteward application. No permission is granted to redistribute
+modified versions under the reserved name.

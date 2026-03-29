@@ -1,0 +1,12 @@
+[package]
+name = "syncsteward-core"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+dirs.workspace = true
+schemars.workspace = true
+serde.workspace = true
+toml.workspace = true
+walkdir.workspace = true

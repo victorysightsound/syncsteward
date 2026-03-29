@@ -1,0 +1,15 @@
+[package]
+name = "syncsteward"
+version = "0.0.1"
+edition = "2024"
+description = "Reserved crate for the upcoming SyncSteward sync hardening and monitoring app."
+license-file = "LICENSE.txt"
+repository = "https://github.com/victorysightsound/syncsteward"
+homepage = "https://syncsteward.com"
+documentation = "https://github.com/victorysightsound/syncsteward"
+readme = "README.md"
+keywords = ["sync", "rclone", "onedrive", "monitoring", "safety"]
+categories = ["command-line-utilities", "filesystem"]
+
+[lib]
+path = "src/lib.rs"

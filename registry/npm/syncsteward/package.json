@@ -1,0 +1,21 @@
+{
+  "name": "syncsteward",
+  "version": "0.0.1",
+  "description": "Reserved package for the upcoming SyncSteward sync hardening and monitoring app.",
+  "license": "UNLICENSED",
+  "homepage": "https://syncsteward.com",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/victorysightsound/syncsteward.git"
+  },
+  "bugs": {
+    "url": "https://github.com/victorysightsound/syncsteward/issues"
+  },
+  "files": [
+    "README.md",
+    "index.js"
+  ],
+  "publishConfig": {
+    "access": "public"
+  }
+}

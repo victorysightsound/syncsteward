@@ -1,0 +1,9 @@
+[package]
+name = "syncsteward-mcp"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+rmcp.workspace = true
+tokio.workspace = true
+syncsteward-core = { path = "../syncsteward-core" }
