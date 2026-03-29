@@ -57,6 +57,8 @@ pub struct PolicyConfig {
     pub folders: Vec<FolderPolicy>,
     #[serde(default = "default_file_class_policies")]
     pub file_classes: Vec<FileClassPolicy>,
+    #[serde(default = "default_target_exclusions")]
+    pub target_exclusions: Vec<TargetExclusion>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -72,6 +74,14 @@ pub struct FileClassPolicy {
     pub class: FileClass,
     pub mode: PolicyMode,
     pub patterns: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct TargetExclusion {
+    pub target: String,
+    pub patterns: Vec<String>,
+    #[serde(default)]
+    pub rationale: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]
@@ -98,6 +108,7 @@ impl Default for PolicyConfig {
         Self {
             folders: Vec::new(),
             file_classes: default_file_class_policies(),
+            target_exclusions: default_target_exclusions(),
         }
     }
 }
@@ -237,6 +248,32 @@ fn default_file_class_policies() -> Vec<FileClassPolicy> {
     ]
 }
 
+fn default_target_exclusions() -> Vec<TargetExclusion> {
+    vec![
+        TargetExclusion {
+            target: "Pictures".to_string(),
+            patterns: vec![
+                "Photos Library.photoslibrary/".to_string(),
+                "Photos Library.photoslibrary/**".to_string(),
+            ],
+            rationale: Some(
+                "Protect the native Photos bundle and sync only ordinary folders/files."
+                    .to_string(),
+            ),
+        },
+        TargetExclusion {
+            target: "Music".to_string(),
+            patterns: vec![
+                "Music Library.musiclibrary/".to_string(),
+                "Music Library.musiclibrary/**".to_string(),
+            ],
+            rationale: Some(
+                "Protect the native Music bundle and sync only ordinary folders/files.".to_string(),
+            ),
+        },
+    ]
+}
+
 pub fn load_config(config_path: Option<&Path>) -> Result<LoadedConfig> {
     if let Some(path) = config_path {
         let explicit_path = expand_path(path);
@@ -369,5 +406,34 @@ mod tests {
         assert_eq!(database.mode, PolicyMode::BackupOnly);
         assert_eq!(wal.mode, PolicyMode::BackupOnly);
         assert_eq!(shm.mode, PolicyMode::BackupOnly);
+    }
+
+    #[test]
+    fn default_policy_protects_native_apple_libraries() {
+        let policy = PolicyConfig::default();
+
+        let pictures = policy
+            .target_exclusions
+            .iter()
+            .find(|entry| entry.target == "Pictures")
+            .expect("pictures exclusions");
+        let music = policy
+            .target_exclusions
+            .iter()
+            .find(|entry| entry.target == "Music")
+            .expect("music exclusions");
+
+        assert!(
+            pictures
+                .patterns
+                .iter()
+                .any(|pattern| pattern == "Photos Library.photoslibrary/**")
+        );
+        assert!(
+            music
+                .patterns
+                .iter()
+                .any(|pattern| pattern == "Music Library.musiclibrary/**")
+        );
     }
 }

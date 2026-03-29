@@ -1,4 +1,4 @@
-use crate::config::{FileClassPolicy, FolderPolicy};
+use crate::config::{FileClassPolicy, FolderPolicy, TargetExclusion};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -120,6 +120,7 @@ pub enum LegacySyncMode {
 pub struct PolicySummary {
     pub folder_policies: Vec<FolderPolicy>,
     pub file_class_policies: Vec<FileClassPolicy>,
+    pub target_exclusions: Vec<TargetExclusion>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]

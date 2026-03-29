@@ -24,6 +24,7 @@
 - classify folders as two-way, backup-only, excluded, or hold
 - explain effective mode and blockers per target before any selective re-enablement
 - protect live SQLite database files and sidecars with backup-only defaults unless explicitly overridden
+- protect native Apple media library bundles with target-specific exclusions inside executable backup-only targets
 - run preflight and folder gating before each sync
 - add single-target execution for approved backup-only targets with dry-run support
 - record per-target last outcome in state and audit

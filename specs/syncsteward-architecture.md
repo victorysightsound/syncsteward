@@ -67,6 +67,7 @@ Configuration now carries both operator paths and safety policy:
 - scan roots
 - folder policy overrides
 - file-class policy defaults
+- target-specific exclusion rules for protected bundles and subtrees
 - alert thresholds and notification toggles
 
 ### Status
@@ -78,7 +79,7 @@ Status is a neutral snapshot of:
 - drift artifact counts and examples
 - acknowledged historical log baseline, if one exists
 - latest sync log summary
-- active folder and file-class policy defaults
+- active folder, file-class, and target-exclusion policy defaults
 
 ### Policy Model
 
@@ -86,6 +87,7 @@ SyncSteward is folder-first, with file-class overrides for dangerous content.
 
 - folder policies express the normal behavior for a subtree
 - file-class policies can tighten safety for specific artifacts
+- target-specific exclusions can protect known bundle/package paths inside otherwise executable targets
 - specific path overrides will come later for rare exceptions
 
 The default dangerous-file posture is fail-safe:
@@ -95,6 +97,13 @@ The default dangerous-file posture is fail-safe:
 - `*.db-shm`, `*.sqlite-shm`, `*.sqlite3-shm` default to `backup_only`
 - `*.conflict*` defaults to `hold`
 - `*victorystore-safeBackup*` defaults to `hold`
+
+The first target-specific exclusions protect native Apple libraries inside approved backup-only targets:
+
+- `Pictures` excludes `Photos Library.photoslibrary`
+- `Music` excludes `Music Library.musiclibrary`
+
+Those bundle exclusions are enforced by SyncSteward itself so backup-only media targets do not depend only on a legacy filter file.
 
 ### Legacy Target Inventory
 

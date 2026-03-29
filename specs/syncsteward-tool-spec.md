@@ -24,7 +24,7 @@ MCP remains the AI-facing surface for:
 Return a full health snapshot:
 
 - config source
-- active folder and file-class policy defaults
+- active folder, file-class, and target-exclusion policy defaults
 - local launch agent state
 - remote host reachability and OneDrive service state
 - conflict and `safeBackup` artifact counts
@@ -118,6 +118,7 @@ Rules:
 - blocked if global preflight is not ready
 - blocked if the target is on hold, excluded, or missing locally
 - blocked if the legacy sync lock is already owned by another process
+- merges target-specific exclusion rules into the temporary filter set for the active run
 - records last target outcome in SyncSteward state
 - appends a target-run audit record
 

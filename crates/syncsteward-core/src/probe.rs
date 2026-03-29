@@ -464,6 +464,7 @@ fn collect_status(config: &AppConfig, config_source: String) -> StatusReport {
     let policy = PolicySummary {
         folder_policies: config.policy.folders.clone(),
         file_class_policies: config.policy.file_classes.clone(),
+        target_exclusions: config.policy.target_exclusions.clone(),
     };
 
     StatusReport {
@@ -927,16 +928,37 @@ fn build_filter_file(
     target: &crate::model::SyncTargetRecord,
     temp_dir: &Path,
 ) -> Result<PathBuf> {
-    if target.name != ".memloft" {
+    let target_exclusions = target_exclusion_lines(config, &target.name);
+    if target.name != ".memloft" && target_exclusions.is_empty() {
         return Ok(config.sync_filter_path.clone());
     }
 
     let base = fs::read_to_string(&config.sync_filter_path)?;
-    let memloft = fs::read_to_string(&config.memloft_filter_path)?;
     let merged_path = temp_dir.join("filters.txt");
-    let merged = format!("{}\n{}", base.trim_end(), memloft);
+    let mut sections = vec![base.trim_end().to_string()];
+
+    if target.name == ".memloft" {
+        sections.push(fs::read_to_string(&config.memloft_filter_path)?);
+    }
+
+    if !target_exclusions.is_empty() {
+        sections.push(target_exclusions.join("\n"));
+    }
+
+    let merged = sections.join("\n");
     fs::write(&merged_path, merged)?;
     Ok(merged_path)
+}
+
+fn target_exclusion_lines(config: &AppConfig, target_name: &str) -> Vec<String> {
+    config
+        .policy
+        .target_exclusions
+        .iter()
+        .filter(|entry| entry.target == target_name)
+        .flat_map(|entry| entry.patterns.iter())
+        .map(|pattern| format!("- {pattern}"))
+        .collect()
 }
 
 fn execute_pause(config: &AppConfig, config_source: &str, target: ActionTarget) -> ControlReport {
@@ -2014,6 +2036,7 @@ path1 and path2 are out of sync, run --resync to recover\n\
             policy: PolicySummary {
                 folder_policies: Vec::new(),
                 file_class_policies: PolicyConfig::default().file_classes,
+                target_exclusions: PolicyConfig::default().target_exclusions,
             },
             launch_agent: LaunchAgentStatus {
                 label: "com.example.test".to_string(),

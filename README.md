@@ -20,6 +20,7 @@ SyncSteward does not restart sync automatically. The current build exposes:
 - preflight checks that answer whether the system is safe to re-enable
 - explicit `pause` and guarded `resume`
 - backup-only defaults for live SQLite database files and sidecars
+- target-specific exclusions for protected bundles inside executable targets
 - target inventory from the current `cloud-sync.sh` with safer recommended policies
 - explicit acknowledgement of a historical incident log after cleanup
 - config scaffolding so recommended folder policies become a real SyncSteward config file
@@ -34,6 +35,15 @@ SyncSteward does not restart sync automatically. The current build exposes:
 
 UI comes later, after the CLI and MCP surfaces are stable.
 
+## Protected Bundles
+
+SyncSteward now applies first-class target exclusions for native Apple media libraries:
+
+- `Pictures` excludes `Photos Library.photoslibrary`
+- `Music` excludes `Music Library.musiclibrary`
+
+That keeps backup-only media targets focused on ordinary folders and files even if the legacy rclone filter file changes later.
+
 ## Commands
 
 ```bash
@@ -42,6 +52,7 @@ cargo run -p syncsteward-cli -- preflight
 cargo run -p syncsteward-cli -- targets
 cargo run -p syncsteward-cli -- check-targets
 cargo run -p syncsteward-cli -- check-target Pictures
+cargo run -p syncsteward-cli -- run-target Pictures --dry-run
 cargo run -p syncsteward-cli -- run-target .memloft --dry-run
 cargo run -p syncsteward-cli -- alerts
 cargo run -p syncsteward-cli -- notify-alerts --dry-run
