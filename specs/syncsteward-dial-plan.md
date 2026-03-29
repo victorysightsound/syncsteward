@@ -18,6 +18,7 @@
 
 ## Phase 3: Folder Policies and Safe Execution
 
+- inventory legacy `cloud-sync.sh` targets and attach recommended SyncSteward policies
 - classify folders as two-way, backup-only, excluded, or hold
 - protect live SQLite database files and sidecars with backup-only defaults unless explicitly overridden
 - run preflight and folder gating before each sync

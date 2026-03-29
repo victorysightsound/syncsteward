@@ -50,6 +50,25 @@ Supports:
 - human output
 - JSON output
 
+### `syncsteward targets`
+
+Read the current `cloud-sync.sh` target inventory and classify each target with a safer recommended policy.
+
+Outputs:
+
+- script path
+- legacy target list
+- local and remote path for each target
+- legacy mode (`bisync` or one-way backup)
+- recommended SyncSteward policy
+- configured override, if present
+- rationale for the recommendation
+
+Supports:
+
+- human output
+- JSON output
+
 ### `syncsteward pause`
 
 Pause:
@@ -105,6 +124,10 @@ Read the same health snapshot exposed by the CLI.
 ### `preflight`
 
 Run the same guarded preflight checks exposed by the CLI.
+
+### `targets`
+
+Read the same legacy-target inventory and recommended policy view exposed by the CLI.
 
 ### `pause_all`, `pause_local`, `pause_remote`
 

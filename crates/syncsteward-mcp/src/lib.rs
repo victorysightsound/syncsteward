@@ -5,7 +5,10 @@ use rmcp::{
     tool, tool_handler, tool_router,
 };
 use std::path::PathBuf;
-use syncsteward_core::{ActionTarget, ControlReport, PreflightReport, StatusReport, pause, preflight, resume, status};
+use syncsteward_core::{
+    ActionTarget, ControlReport, PreflightReport, StatusReport, SyncTargetInventoryReport, pause,
+    preflight, resume, status, targets,
+};
 
 type McpResult<T> = Result<Json<T>, String>;
 
@@ -53,6 +56,18 @@ impl SyncStewardMcpServer {
     async fn preflight(&self) -> McpResult<PreflightReport> {
         let config_path = self.config_path.clone();
         let report = tokio::task::spawn_blocking(move || preflight(config_path.as_deref()))
+            .await
+            .map_err(|error| error.to_string())?
+            .map_err(|error| error.to_string())?;
+        Ok(Json(report))
+    }
+
+    #[tool(
+        description = "Read the current legacy sync targets from cloud-sync.sh and show the safer recommended SyncSteward policy for each one."
+    )]
+    async fn targets(&self) -> McpResult<SyncTargetInventoryReport> {
+        let config_path = self.config_path.clone();
+        let report = tokio::task::spawn_blocking(move || targets(config_path.as_deref()))
             .await
             .map_err(|error| error.to_string())?
             .map_err(|error| error.to_string())?;

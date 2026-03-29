@@ -14,6 +14,31 @@ pub struct StatusReport {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SyncTargetInventoryReport {
+    pub config_source: String,
+    pub script_path: PathBuf,
+    pub targets: Vec<SyncTargetRecord>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SyncTargetRecord {
+    pub name: String,
+    pub local_path: PathBuf,
+    pub remote_path: String,
+    pub legacy_mode: LegacySyncMode,
+    pub recommended_mode: crate::config::PolicyMode,
+    pub configured_mode: Option<crate::config::PolicyMode>,
+    pub rationale: String,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum LegacySyncMode {
+    Bisync,
+    BackupOneWay,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct PolicySummary {
     pub folder_policies: Vec<FolderPolicy>,
     pub file_class_policies: Vec<FileClassPolicy>,

@@ -2,7 +2,8 @@ use clap::{Parser, Subcommand, ValueEnum};
 use std::path::PathBuf;
 use syncsteward_core::{
     ActionOutcome, ActionStepStatus, ActionTarget, CheckStatus, ControlReport, PolicyMode,
-    PreflightReport, StatusReport, pause, preflight, resume, status,
+    PreflightReport, StatusReport, SyncTargetInventoryReport, pause, preflight, resume, status,
+    targets,
 };
 
 #[derive(Debug, Parser)]
@@ -24,6 +25,11 @@ enum Command {
     },
     /// Run guarded preflight checks before re-enabling sync.
     Preflight {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Read the legacy sync targets from the current cloud-sync script and show the safer recommended policy for each one.
+    Targets {
         #[arg(long)]
         json: bool,
     },
@@ -94,6 +100,20 @@ fn run() -> i32 {
                 }
             } else {
                 print_preflight(&report);
+            }
+            0
+        }
+        Command::Targets { json } => {
+            let report = match targets(cli.config.as_deref()) {
+                Ok(report) => report,
+                Err(error) => return fatal_error(&error.to_string()),
+            };
+            if json {
+                if print_json(&report).is_err() {
+                    return fatal_error("failed to serialize target inventory as JSON");
+                }
+            } else {
+                print_targets(&report);
             }
             0
         }
@@ -264,6 +284,26 @@ fn print_control(report: &ControlReport) {
     }
 }
 
+fn print_targets(report: &SyncTargetInventoryReport) {
+    println!("SyncSteward Target Inventory");
+    println!("Config source: {}", report.config_source);
+    println!("Script path: {}", report.script_path.display());
+    for target in &report.targets {
+        println!(
+            "- {} [{} -> {}]",
+            target.name,
+            describe_legacy_mode(target.legacy_mode),
+            describe_policy_mode(target.recommended_mode),
+        );
+        println!("  local: {}", target.local_path.display());
+        println!("  remote: {}", target.remote_path);
+        if let Some(mode) = target.configured_mode {
+            println!("  configured override: {}", describe_policy_mode(mode));
+        }
+        println!("  why: {}", target.rationale);
+    }
+}
+
 fn print_path_samples(title: &str, paths: &[PathBuf]) {
     if paths.is_empty() {
         return;
@@ -280,6 +320,13 @@ fn describe_policy_mode(mode: PolicyMode) -> &'static str {
         PolicyMode::BackupOnly => "backup only",
         PolicyMode::Excluded => "excluded",
         PolicyMode::Hold => "hold",
+    }
+}
+
+fn describe_legacy_mode(mode: syncsteward_core::LegacySyncMode) -> &'static str {
+    match mode {
+        syncsteward_core::LegacySyncMode::Bisync => "legacy bisync",
+        syncsteward_core::LegacySyncMode::BackupOneWay => "legacy backup",
     }
 }
 

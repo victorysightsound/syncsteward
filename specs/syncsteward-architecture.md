@@ -21,6 +21,7 @@ The app is responsible for:
 - conflict and backup artifact detection
 - sync orchestration policy
 - file-class safety defaults for risky artifacts like live SQLite databases
+- inventorying the current legacy sync targets before any re-enablement plan is applied
 - notifications and failure escalation
 - future folder policy management and controlled re-enablement
 
@@ -89,6 +90,18 @@ The default dangerous-file posture is fail-safe:
 - `*.db-shm`, `*.sqlite-shm`, `*.sqlite3-shm` default to `backup_only`
 - `*.conflict*` defaults to `hold`
 - `*victorystore-safeBackup*` defaults to `hold`
+
+### Legacy Target Inventory
+
+SyncSteward should read the current `cloud-sync.sh` target list instead of guessing what is being synchronized today.
+
+For each legacy target it should expose:
+
+- legacy mode (`bisync` or one-way backup)
+- local and remote path
+- recommended SyncSteward policy
+- rationale for the recommendation
+- any explicit configured override that already exists
 
 ### Preflight
 
