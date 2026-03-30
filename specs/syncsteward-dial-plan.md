@@ -49,6 +49,7 @@
 - make the approved-target cycle the future daemon/menu bar execution entry point
 - add a scheduled runner-tick command that only executes the approved cycle when due
 - add a dedicated SyncSteward runner launch agent that schedules `runner-tick` without reusing the legacy broad sync job
+- make scheduled execution independent of launchd's stripped default environment by exporting a stable tool `PATH` and resolving external tools from common install locations
 - refine alert deduplication and escalation after the first notification slice lands
 - suppress repeated scheduled notifications for unchanged alert sets until a configurable repeat window expires
 - send one recovery notification when a previously active alert set clears

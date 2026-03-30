@@ -227,6 +227,8 @@ The dedicated runner launch agent should:
 - be configurable through SyncSteward config
 - write a stable per-user plist under `~/Library/LaunchAgents`
 - execute `runner-tick` on a shorter wake cadence than the approved-cycle cadence
+- export an explicit tool `PATH` for launchd instead of relying on the stripped default environment
+- allow execution paths to resolve external tools like `rclone` from common system and Homebrew locations before falling back to ambient `PATH`
 - remain separate from the paused legacy `com.cloud-sync` launch agent during migration
 - be manageable through the same CLI and MCP control plane that owns the rest of the product
 

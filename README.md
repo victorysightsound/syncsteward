@@ -156,6 +156,7 @@ SyncSteward now has a config-backed cycle command for the approved healthy subse
 - `runner-tick` is the daemon-ready entry point: it checks whether the approved cycle is due, runs it only when needed, and otherwise no-ops with the current alert snapshot
 - scheduled notifications now suppress unchanged alert sets inside a repeat window and can send one recovery notification when alerts clear
 - `install-runner-agent` writes and loads `com.syncsteward.runner`, which schedules `runner-tick` independently of the paused legacy `com.cloud-sync` job
+- `install-runner-agent` now writes an explicit runner `PATH`, and execution resolves external tools like `rclone` from common system and Homebrew locations so launchd cannot silently fail on a stripped environment
 - this is the first daemon-ready entry point for future scheduling, menu bar UI actions, and MCP orchestration
 - broad legacy folders can stay on `hold` while the approved subset keeps running safely
 

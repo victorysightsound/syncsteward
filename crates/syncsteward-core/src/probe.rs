@@ -2232,7 +2232,7 @@ fn execute_backup_only_target(
     ));
 
     let remote_path = format!("syncsteward-target:{}", target.remote_path);
-    let mut command = Command::new("rclone");
+    let mut command = Command::new(resolve_program_path("rclone"));
     command
         .env("RCLONE_CONFIG", &rclone_config_path)
         .arg("sync")
@@ -2333,7 +2333,7 @@ fn execute_snapshot_backup_target(
     ));
 
     let remote_path = format!("syncsteward-target:{}", target.remote_path);
-    let mut command = Command::new("rclone");
+    let mut command = Command::new(resolve_program_path("rclone"));
     command
         .env("RCLONE_CONFIG", &rclone_config_path)
         .arg("sync")
@@ -2463,7 +2463,7 @@ fn execute_snapshot_backup_target(
             target.remote_path,
             relative_path.to_string_lossy().replace('\\', "/")
         );
-        let mut upload = Command::new("rclone");
+        let mut upload = Command::new(resolve_program_path("rclone"));
         upload
             .env("RCLONE_CONFIG", &rclone_config_path)
             .arg("copyto")
@@ -3191,6 +3191,11 @@ fn render_runner_launch_agent_plist(
             "    <string>{config}</string>\n",
             "    <string>runner-tick</string>\n",
             "  </array>\n",
+            "  <key>EnvironmentVariables</key>\n",
+            "  <dict>\n",
+            "    <key>PATH</key>\n",
+            "    <string>{path_env}</string>\n",
+            "  </dict>\n",
             "  <key>RunAtLoad</key>\n",
             "  <{run_at_load}/>\n",
             "  <key>StartInterval</key>\n",
@@ -3205,6 +3210,7 @@ fn render_runner_launch_agent_plist(
         label = plist_xml_escape(&agent.label),
         program = plist_xml_escape(&executable_path.to_string_lossy()),
         config = plist_xml_escape(&config_path.to_string_lossy()),
+        path_env = plist_xml_escape(&runner_path_environment()),
         run_at_load = if agent.run_at_load { "true" } else { "false" },
         interval_seconds = interval_seconds,
         stdout_path = plist_xml_escape(&agent.stdout_path.to_string_lossy()),
@@ -3958,6 +3964,62 @@ fn current_uid() -> String {
     }
 }
 
+fn runner_path_environment() -> String {
+    let mut segments = vec![
+        "/usr/local/bin".to_string(),
+        "/opt/homebrew/bin".to_string(),
+        "/usr/bin".to_string(),
+        "/bin".to_string(),
+        "/usr/sbin".to_string(),
+        "/sbin".to_string(),
+    ];
+
+    if let Some(path) = std::env::var_os("PATH") {
+        for segment in std::env::split_paths(&path) {
+            let value = segment.to_string_lossy().to_string();
+            if !value.is_empty() && !segments.iter().any(|existing| existing == &value) {
+                segments.push(value);
+            }
+        }
+    }
+
+    segments.join(":")
+}
+
+fn resolve_program_path(program: &str) -> PathBuf {
+    let candidate = PathBuf::from(program);
+    if candidate.components().count() > 1 {
+        return candidate;
+    }
+
+    let env_paths = std::env::var_os("PATH")
+        .map(|value| std::env::split_paths(&value).collect::<Vec<_>>())
+        .unwrap_or_default();
+
+    let mut search_paths = vec![
+        PathBuf::from("/usr/local/bin"),
+        PathBuf::from("/opt/homebrew/bin"),
+        PathBuf::from("/usr/bin"),
+        PathBuf::from("/bin"),
+        PathBuf::from("/usr/sbin"),
+        PathBuf::from("/sbin"),
+    ];
+    for path in env_paths {
+        if !search_paths.iter().any(|existing| existing == &path) {
+            search_paths.push(path);
+        }
+    }
+
+    for directory in search_paths {
+        let resolved = directory.join(program);
+        if resolved.exists() {
+            return resolved;
+        }
+    }
+
+    candidate
+}
+
 struct CommandOutput {
     success: bool,
     stdout: String,
@@ -3980,7 +4042,10 @@ where
     I: IntoIterator<Item = S>,
     S: AsRef<std::ffi::OsStr>,
 {
-    match Command::new(program).args(args).output() {
+    match Command::new(resolve_program_path(program))
+        .args(args)
+        .output()
+    {
         Ok(output) => CommandOutput {
             success: output.status.success(),
             stdout: String::from_utf8_lossy(&output.stdout).to_string(),
@@ -4422,6 +4487,23 @@ path1 and path2 are out of sync, run --resync to recover\n\
             runner_due_status(Some(1_000), 60_000, 61_000);
         assert!(due_after_interval);
         assert_eq!(next_due_after_interval, Some(61_000));
+    }
+
+    #[test]
+    fn resolve_program_path_finds_common_system_binary() {
+        let resolved = super::resolve_program_path("sh");
+        assert!(resolved.exists());
+        assert_eq!(
+            resolved.file_name().and_then(|value| value.to_str()),
+            Some("sh")
+        );
+    }
+
+    #[test]
+    fn runner_path_environment_includes_usr_local_bin() {
+        let path = super::runner_path_environment();
+        assert!(path.split(':').any(|segment| segment == "/usr/local/bin"));
+        assert!(path.split(':').any(|segment| segment == "/usr/bin"));
     }
 
     #[test]
