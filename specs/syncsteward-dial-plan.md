@@ -58,6 +58,7 @@
 
 - add a menu bar app
 - start with a native macOS shell that reads the composed `overview` surface, shows runner-agent state, and exposes only safe refresh, dry-run, and open-log/config actions
+- make direct app launch open a visible control window so the shell does not feel inert outside the menu bar
 - provide a thin installer path that places `SyncSteward.app` in `~/Applications` without splitting app-bundle behavior away from the dev-built shell and CLI
 - show green/yellow/red health state
 - expose sync now, pause, resume, open logs, and reveal conflicts

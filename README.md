@@ -56,6 +56,7 @@ SyncSteward now includes a first native macOS shell under:
 The current shell is intentionally small:
 
 - SwiftUI menu bar app
+- opens a visible control window on direct app launch
 - reads `syncsteward-cli overview --json`
 - reads `syncsteward-cli runner-agent-status --json` for launchd visibility
 - shows preflight, runner, runner-agent, approved-target, recent-run, and alert state

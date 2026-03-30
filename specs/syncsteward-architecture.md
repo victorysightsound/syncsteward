@@ -207,6 +207,7 @@ Monitoring should build on the same state model rather than inventing a separate
 - the first native macOS shell should consume that overview contract rather than reimplementing status stitching or sync sequencing
 - the first native macOS shell may be installed as a thin local app bundle wrapper that still launches the current dev-built shell and CLI rather than forking a separate desktop logic path
 - the first native macOS shell should stay inside safe operator boundaries by exposing only refresh, runner-agent visibility, dry-run runner actions, and open-log/config affordances while delegating all real work to CLI and MCP surfaces
+- direct app launch should present a visible control window while the menu bar extra remains available for quick status and operator actions
 
 The next daemon-ready layer should also stay inside the same guarded model:
 

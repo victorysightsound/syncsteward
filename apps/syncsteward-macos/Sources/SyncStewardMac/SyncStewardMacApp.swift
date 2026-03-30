@@ -1,18 +1,17 @@
 import AppKit
 import SwiftUI
 
-final class AppDelegate: NSObject, NSApplicationDelegate {
-    func applicationDidFinishLaunching(_ notification: Notification) {
-        NSApp.setActivationPolicy(.accessory)
-    }
-}
-
 @main
 struct SyncStewardMacApp: App {
-    @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @StateObject private var store = OverviewStore()
 
     var body: some Scene {
+        WindowGroup("SyncSteward", id: "control-center") {
+            SyncStewardControlCenterView(store: store)
+                .frame(minWidth: 520, minHeight: 640)
+        }
+        .defaultSize(width: 560, height: 680)
+
         MenuBarExtra("SyncSteward", systemImage: store.statusSymbolName) {
             SyncStewardMenuBarView(store: store)
                 .frame(width: 420)
@@ -26,8 +25,24 @@ struct SyncStewardMacApp: App {
     }
 }
 
+struct SyncStewardControlCenterView: View {
+    @ObservedObject var store: OverviewStore
+
+    var body: some View {
+        ScrollView {
+            SyncStewardMenuBarView(store: store, includeOpenWindowAction: false)
+                .frame(maxWidth: .infinity, alignment: .topLeading)
+        }
+        .task {
+            await store.refreshIfNeeded()
+        }
+    }
+}
+
 struct SyncStewardMenuBarView: View {
     @ObservedObject var store: OverviewStore
+    var includeOpenWindowAction: Bool = true
+    @Environment(\.openWindow) private var openWindow
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -285,6 +300,12 @@ struct SyncStewardMenuBarView: View {
             }
 
             HStack(spacing: 10) {
+                if includeOpenWindowAction {
+                    Button("Open Window") {
+                        openWindow(id: "control-center")
+                    }
+                }
+
                 Button("Open Config") {
                     store.openConfig()
                 }
