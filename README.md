@@ -25,6 +25,7 @@ SyncSteward does not restart sync automatically. The current build exposes:
 - backup-only defaults for live SQLite database files and sidecars
 - target-specific exclusions for protected bundles inside executable targets
 - snapshot-backed handling for runtime SQLite targets like `.memloft`
+- bounded retries around `rclone` sync and copy operations so one transient remote hiccup does not poison the whole approved cycle
 - target inventory from the current `cloud-sync.sh` with safer recommended policies
 - explicitly managed subtargets that can be backed up safely while their broad parent folder stays on hold
 - durable managed-target IDs as the first foundation for future relocate/adopt workflows
@@ -157,6 +158,7 @@ SyncSteward now has a config-backed cycle command for the approved healthy subse
 - scheduled notifications now suppress unchanged alert sets inside a repeat window and can send one recovery notification when alerts clear
 - `install-runner-agent` writes and loads `com.syncsteward.runner`, which schedules `runner-tick` independently of the paused legacy `com.cloud-sync` job
 - `install-runner-agent` now writes an explicit runner `PATH`, and execution resolves external tools like `rclone` from common system and Homebrew locations so launchd cannot silently fail on a stripped environment
+- `run-target` and `run-cycle` now retry `rclone` sync and copy steps a small number of times before marking the target failed
 - this is the first daemon-ready entry point for future scheduling, menu bar UI actions, and MCP orchestration
 - broad legacy folders can stay on `hold` while the approved subset keeps running safely
 

@@ -195,6 +195,7 @@ The next execution layer is also explicit and fail-safe:
 - executable targets may come from either the legacy script inventory or explicit managed-target config
 - execution must respect the legacy sync lock so manual runs cannot overlap the old script
 - every target run should append audit history and record last outcome in state
+- execution should retry transient `rclone` transport failures a bounded number of times before recording a hard failure
 - future relocate/adopt commands should use managed target IDs instead of path-only matching when reconnecting moved target roots
 - add/relocate target mutations should update config through the same guarded control plane instead of forcing manual config edits
 

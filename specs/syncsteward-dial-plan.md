@@ -54,6 +54,7 @@
 - suppress repeated scheduled notifications for unchanged alert sets until a configurable repeat window expires
 - send one recovery notification when a previously active alert set clears
 - add one composed overview surface for CLI, MCP, and future UI consumers so operator dashboards do not need to stitch together multiple health commands
+- harden approved-target execution with bounded retries around transient `rclone` transport failures
 
 ## Phase 5: UI
 

@@ -26,7 +26,7 @@ use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
 use walkdir::{DirEntry, WalkDir};
 
@@ -2232,49 +2232,43 @@ fn execute_backup_only_target(
     ));
 
     let remote_path = format!("syncsteward-target:{}", target.remote_path);
-    let mut command = Command::new(resolve_program_path("rclone"));
-    command
-        .env("RCLONE_CONFIG", &rclone_config_path)
-        .arg("sync")
-        .arg(&target.local_path)
-        .arg(&remote_path)
-        .arg("--filter-from")
-        .arg(&filter_path)
-        .arg("--skip-links")
-        .arg("--exclude")
-        .arg("*.db-journal")
-        .arg("--exclude")
-        .arg("*.db-wal")
-        .arg("--exclude")
-        .arg("*.db-shm")
-        .arg("--exclude")
-        .arg("*.sqlite-journal")
-        .arg("--exclude")
-        .arg("*.sqlite-wal")
-        .arg("--exclude")
-        .arg("*.sqlite-shm")
-        .arg("--exclude")
-        .arg("*.sqlite3-journal")
-        .arg("--exclude")
-        .arg("*.sqlite3-wal")
-        .arg("--exclude")
-        .arg("*.sqlite3-shm");
-    if dry_run {
-        command.arg("--dry-run");
-    }
-
-    let output = match command.output() {
-        Ok(output) => CommandOutput {
-            success: output.status.success(),
-            stdout: String::from_utf8_lossy(&output.stdout).to_string(),
-            stderr: String::from_utf8_lossy(&output.stderr).to_string(),
+    let output = run_spawned_command_with_retry(
+        || {
+            let mut command = Command::new(resolve_program_path("rclone"));
+            command
+                .env("RCLONE_CONFIG", &rclone_config_path)
+                .arg("sync")
+                .arg(&target.local_path)
+                .arg(&remote_path)
+                .arg("--filter-from")
+                .arg(&filter_path)
+                .arg("--skip-links")
+                .arg("--exclude")
+                .arg("*.db-journal")
+                .arg("--exclude")
+                .arg("*.db-wal")
+                .arg("--exclude")
+                .arg("*.db-shm")
+                .arg("--exclude")
+                .arg("*.sqlite-journal")
+                .arg("--exclude")
+                .arg("*.sqlite-wal")
+                .arg("--exclude")
+                .arg("*.sqlite-shm")
+                .arg("--exclude")
+                .arg("*.sqlite3-journal")
+                .arg("--exclude")
+                .arg("*.sqlite3-wal")
+                .arg("--exclude")
+                .arg("*.sqlite3-shm");
+            if dry_run {
+                command.arg("--dry-run");
+            }
+            command
         },
-        Err(error) => CommandOutput {
-            success: false,
-            stdout: String::new(),
-            stderr: error.to_string(),
-        },
-    };
+        rclone_retry_attempts(dry_run),
+        Duration::from_secs(2),
+    );
 
     if output.success {
         steps.push(applied_step(
@@ -2333,41 +2327,47 @@ fn execute_snapshot_backup_target(
     ));
 
     let remote_path = format!("syncsteward-target:{}", target.remote_path);
-    let mut command = Command::new(resolve_program_path("rclone"));
-    command
-        .env("RCLONE_CONFIG", &rclone_config_path)
-        .arg("sync")
-        .arg(&target.local_path)
-        .arg(&remote_path)
-        .arg("--filter-from")
-        .arg(&filter_path)
-        .arg("--skip-links")
-        .arg("--exclude")
-        .arg("*.db-journal")
-        .arg("--exclude")
-        .arg("*.db-wal")
-        .arg("--exclude")
-        .arg("*.db-shm")
-        .arg("--exclude")
-        .arg("*.sqlite-journal")
-        .arg("--exclude")
-        .arg("*.sqlite-wal")
-        .arg("--exclude")
-        .arg("*.sqlite-shm")
-        .arg("--exclude")
-        .arg("*.sqlite3-journal")
-        .arg("--exclude")
-        .arg("*.sqlite3-wal")
-        .arg("--exclude")
-        .arg("*.sqlite3-shm");
-    for pattern in snapshot_exclusion_patterns(snapshot_policy) {
-        command.arg("--exclude").arg(pattern);
-    }
-    if dry_run {
-        command.arg("--dry-run");
-    }
-
-    let non_db_output = run_spawned_command(command);
+    let snapshot_excludes = snapshot_exclusion_patterns(snapshot_policy);
+    let non_db_output = run_spawned_command_with_retry(
+        || {
+            let mut command = Command::new(resolve_program_path("rclone"));
+            command
+                .env("RCLONE_CONFIG", &rclone_config_path)
+                .arg("sync")
+                .arg(&target.local_path)
+                .arg(&remote_path)
+                .arg("--filter-from")
+                .arg(&filter_path)
+                .arg("--skip-links")
+                .arg("--exclude")
+                .arg("*.db-journal")
+                .arg("--exclude")
+                .arg("*.db-wal")
+                .arg("--exclude")
+                .arg("*.db-shm")
+                .arg("--exclude")
+                .arg("*.sqlite-journal")
+                .arg("--exclude")
+                .arg("*.sqlite-wal")
+                .arg("--exclude")
+                .arg("*.sqlite-shm")
+                .arg("--exclude")
+                .arg("*.sqlite3-journal")
+                .arg("--exclude")
+                .arg("*.sqlite3-wal")
+                .arg("--exclude")
+                .arg("*.sqlite3-shm");
+            for pattern in &snapshot_excludes {
+                command.arg("--exclude").arg(pattern);
+            }
+            if dry_run {
+                command.arg("--dry-run");
+            }
+            command
+        },
+        rclone_retry_attempts(dry_run),
+        Duration::from_secs(2),
+    );
     if non_db_output.success {
         steps.push(applied_step(
             "rclone_sync_non_db",
@@ -2463,16 +2463,22 @@ fn execute_snapshot_backup_target(
             target.remote_path,
             relative_path.to_string_lossy().replace('\\', "/")
         );
-        let mut upload = Command::new(resolve_program_path("rclone"));
-        upload
-            .env("RCLONE_CONFIG", &rclone_config_path)
-            .arg("copyto")
-            .arg(&snapshot_path)
-            .arg(&remote_file);
-        if dry_run {
-            upload.arg("--dry-run");
-        }
-        let upload_output = run_spawned_command(upload);
+        let upload_output = run_spawned_command_with_retry(
+            || {
+                let mut upload = Command::new(resolve_program_path("rclone"));
+                upload
+                    .env("RCLONE_CONFIG", &rclone_config_path)
+                    .arg("copyto")
+                    .arg(&snapshot_path)
+                    .arg(&remote_file);
+                if dry_run {
+                    upload.arg("--dry-run");
+                }
+                upload
+            },
+            rclone_retry_attempts(dry_run),
+            Duration::from_secs(2),
+        );
         if upload_output.success {
             steps.push(applied_step(
                 "sqlite_snapshot_upload",
@@ -3337,6 +3343,7 @@ fn run_remote_systemctl(config: &AppConfig, host: &str, action: &str) -> Command
                 primary.trim_or(&primary.stdout),
                 fallback.trim_or(&fallback.stdout)
             ),
+            attempts: 1,
         }
     }
 }
@@ -3917,19 +3924,28 @@ fn summarize_command_output(output: &CommandOutput) -> String {
     } else {
         output.stderr.trim()
     };
-    if source.is_empty() {
-        return "command completed without output".to_string();
-    }
-
-    let lines = source.lines().collect::<Vec<_>>();
-    let start = lines.len().saturating_sub(20);
-    let mut summary = lines[start..].join("\n");
-    if start > 0 {
-        summary = format!("...truncated...\n{summary}");
-    }
-    if summary.len() > 4000 {
-        summary.truncate(4000);
-        summary.push_str("\n...truncated...");
+    let mut summary = if source.is_empty() {
+        "command completed without output".to_string()
+    } else {
+        let lines = source.lines().collect::<Vec<_>>();
+        let start = lines.len().saturating_sub(20);
+        let mut summary = lines[start..].join("\n");
+        if start > 0 {
+            summary = format!("...truncated...\n{summary}");
+        }
+        if summary.len() > 4000 {
+            summary.truncate(4000);
+            summary.push_str("\n...truncated...");
+        }
+        summary
+    };
+    if output.attempts > 1 {
+        let prefix = if output.success {
+            format!("command succeeded after {} attempts", output.attempts)
+        } else {
+            format!("command failed after {} attempts", output.attempts)
+        };
+        summary = format!("{prefix}\n{summary}");
     }
     summary
 }
@@ -4024,6 +4040,7 @@ struct CommandOutput {
     success: bool,
     stdout: String,
     stderr: String,
+    attempts: usize,
 }
 
 impl CommandOutput {
@@ -4050,11 +4067,13 @@ where
             success: output.status.success(),
             stdout: String::from_utf8_lossy(&output.stdout).to_string(),
             stderr: String::from_utf8_lossy(&output.stderr).to_string(),
+            attempts: 1,
         },
         Err(error) => CommandOutput {
             success: false,
             stdout: String::new(),
             stderr: error.to_string(),
+            attempts: 1,
         },
     }
 }
@@ -4065,13 +4084,74 @@ fn run_spawned_command(mut command: Command) -> CommandOutput {
             success: output.status.success(),
             stdout: String::from_utf8_lossy(&output.stdout).to_string(),
             stderr: String::from_utf8_lossy(&output.stderr).to_string(),
+            attempts: 1,
         },
         Err(error) => CommandOutput {
             success: false,
             stdout: String::new(),
             stderr: error.to_string(),
+            attempts: 1,
         },
     }
+}
+
+fn rclone_retry_attempts(dry_run: bool) -> usize {
+    if dry_run { 1 } else { 3 }
+}
+
+fn run_spawned_command_with_retry<F>(
+    mut make_command: F,
+    max_attempts: usize,
+    retry_delay: Duration,
+) -> CommandOutput
+where
+    F: FnMut() -> Command,
+{
+    let attempts = max_attempts.max(1);
+    let mut retry_notes = Vec::new();
+    let mut last_output = None;
+
+    for attempt in 1..=attempts {
+        let mut output = run_spawned_command(make_command());
+        output.attempts = attempt;
+        if output.success {
+            if !retry_notes.is_empty() {
+                let note = retry_notes.join("\n");
+                output.stderr = if output.stderr.trim().is_empty() {
+                    note
+                } else {
+                    format!("{note}\n{}", output.stderr.trim())
+                };
+            }
+            return output;
+        }
+
+        retry_notes.push(format!(
+            "attempt {attempt}: {}",
+            output.trim_or(&output.stdout)
+        ));
+        last_output = Some(output);
+        if attempt < attempts {
+            std::thread::sleep(retry_delay);
+        }
+    }
+
+    let mut output = last_output.unwrap_or(CommandOutput {
+        success: false,
+        stdout: String::new(),
+        stderr: "command failed without output".to_string(),
+        attempts,
+    });
+    output.attempts = attempts;
+    if retry_notes.len() > 1 {
+        let notes = retry_notes.join("\n");
+        output.stderr = if output.stderr.trim().is_empty() {
+            notes
+        } else {
+            format!("{notes}\n{}", output.stderr.trim())
+        };
+    }
+    output
 }
 
 impl ActionTarget {
@@ -4097,8 +4177,8 @@ mod tests {
     use super::{
         ActionOutcome, ActionStepStatus, add_managed_target, alert_signature, analyze_log_contents,
         build_recent_target_run_summaries, ensure_target_ids, evaluate_preflight,
-        relocate_managed_target, runner_due_status, scheduled_notify_alerts, summarize_outcome,
-        target_state_key,
+        relocate_managed_target, run_spawned_command_with_retry, runner_due_status,
+        scheduled_notify_alerts, summarize_command_output, summarize_outcome, target_state_key,
     };
     use crate::config::{AppConfig, ManagedTarget, PolicyConfig, PolicyMode, load_config};
     use crate::model::{
@@ -4109,6 +4189,8 @@ mod tests {
     use crate::state::{AlertNotificationState, AppState, TargetRunState};
     use std::fs;
     use std::path::PathBuf;
+    use std::process::Command;
+    use std::time::Duration;
     use uuid::Uuid;
 
     #[test]
@@ -4504,6 +4586,52 @@ path1 and path2 are out of sync, run --resync to recover\n\
         let path = super::runner_path_environment();
         assert!(path.split(':').any(|segment| segment == "/usr/local/bin"));
         assert!(path.split(':').any(|segment| segment == "/usr/bin"));
+    }
+
+    #[test]
+    fn run_spawned_command_with_retry_recovers_after_transient_failure() {
+        let marker = std::env::temp_dir().join(format!(
+            "syncsteward-retry-{}-{}",
+            std::process::id(),
+            super::now_unix_ms()
+        ));
+        let output = run_spawned_command_with_retry(
+            || {
+                let mut command = Command::new("sh");
+                command
+                    .arg("-c")
+                    .arg(
+                        "if [ -f \"$1\" ]; then echo ok; exit 0; else touch \"$1\"; echo transient >&2; exit 1; fi",
+                    )
+                    .arg("sh")
+                    .arg(&marker);
+                command
+            },
+            2,
+            Duration::from_millis(1),
+        );
+        let _ = fs::remove_file(&marker);
+
+        assert!(output.success);
+        assert_eq!(output.attempts, 2);
+        assert!(summarize_command_output(&output).contains("succeeded after 2 attempts"));
+    }
+
+    #[test]
+    fn run_spawned_command_with_retry_reports_persistent_failure() {
+        let output = run_spawned_command_with_retry(
+            || {
+                let mut command = Command::new("sh");
+                command.arg("-c").arg("echo still failing >&2; exit 1");
+                command
+            },
+            2,
+            Duration::from_millis(1),
+        );
+
+        assert!(!output.success);
+        assert_eq!(output.attempts, 2);
+        assert!(summarize_command_output(&output).contains("failed after 2 attempts"));
     }
 
     #[test]
