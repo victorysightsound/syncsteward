@@ -1,9 +1,68 @@
 import AppKit
 import SwiftUI
 
+@MainActor
+final class DashboardWindowController: NSObject, NSWindowDelegate {
+    static let shared = DashboardWindowController()
+
+    private var store: OverviewStore?
+    private var window: NSWindow?
+
+    func configure(store: OverviewStore) {
+        self.store = store
+    }
+
+    func show() {
+        guard let store else { return }
+
+        if let hostingController = window?.contentViewController as? NSHostingController<SyncStewardControlCenterView> {
+            hostingController.rootView = SyncStewardControlCenterView(store: store)
+        } else {
+            let hostingController = NSHostingController(rootView: SyncStewardControlCenterView(store: store))
+            let dashboardWindow = NSWindow(contentViewController: hostingController)
+            dashboardWindow.title = "SyncSteward"
+            dashboardWindow.setContentSize(NSSize(width: 560, height: 680))
+            dashboardWindow.minSize = NSSize(width: 520, height: 640)
+            dashboardWindow.styleMask = [.titled, .closable, .miniaturizable, .resizable]
+            dashboardWindow.isReleasedWhenClosed = false
+            dashboardWindow.delegate = self
+            window = dashboardWindow
+        }
+
+        NSApplication.shared.activate(ignoringOtherApps: true)
+        window?.center()
+        window?.makeKeyAndOrderFront(nil)
+    }
+
+    func windowWillClose(_ notification: Notification) {
+        NSApplication.shared.hide(nil)
+    }
+}
+
+@MainActor
+final class SyncStewardAppDelegate: NSObject, NSApplicationDelegate {
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+            DashboardWindowController.shared.show()
+        }
+    }
+
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        DashboardWindowController.shared.show()
+        return true
+    }
+}
+
 @main
 struct SyncStewardMacApp: App {
-    @StateObject private var store = OverviewStore()
+    @NSApplicationDelegateAdaptor(SyncStewardAppDelegate.self) private var appDelegate
+    @StateObject private var store: OverviewStore
+
+    init() {
+        let store = OverviewStore()
+        _store = StateObject(wrappedValue: store)
+        DashboardWindowController.shared.configure(store: store)
+    }
 
     var body: some Scene {
         MenuBarExtra("SyncSteward", systemImage: store.statusSymbolName) {
@@ -11,12 +70,6 @@ struct SyncStewardMacApp: App {
                 .frame(width: 420)
         }
         .menuBarExtraStyle(.window)
-
-        Window("SyncSteward", id: "control-center") {
-            SyncStewardControlCenterView(store: store)
-                .frame(minWidth: 520, minHeight: 640)
-        }
-        .defaultSize(width: 560, height: 680)
 
         Settings {
             SyncStewardSettingsView(store: store)
@@ -42,7 +95,6 @@ struct SyncStewardControlCenterView: View {
 struct SyncStewardMenuBarView: View {
     @ObservedObject var store: OverviewStore
     var includeOpenWindowAction: Bool = true
-    @Environment(\.openWindow) private var openWindow
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -302,7 +354,7 @@ struct SyncStewardMenuBarView: View {
             HStack(spacing: 10) {
                 if includeOpenWindowAction {
                     Button("Open Dashboard") {
-                        openWindow(id: "control-center")
+                        DashboardWindowController.shared.show()
                     }
                 }
 
