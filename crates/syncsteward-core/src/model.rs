@@ -68,6 +68,27 @@ pub struct RelocateManagedTargetReport {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct RunCycleReport {
+    pub config_source: String,
+    pub dry_run: bool,
+    pub outcome: ActionOutcome,
+    pub summary: String,
+    pub preflight_ready: bool,
+    pub approved_target_count: usize,
+    pub target_runs: Vec<TargetRunReport>,
+    pub skipped_targets: Vec<CycleSkippedTarget>,
+    pub alerts: Vec<AlertRecord>,
+    pub notification: Option<NotifyAlertsReport>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct CycleSkippedTarget {
+    pub selector: String,
+    pub summary: String,
+    pub detail: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct AlertReport {
     pub config_source: String,
     pub generated_at_unix_ms: u128,

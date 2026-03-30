@@ -30,6 +30,8 @@ pub struct AppConfig {
     #[serde(default)]
     pub alerts: AlertConfig,
     #[serde(default)]
+    pub runner: RunnerConfig,
+    #[serde(default)]
     pub policy: PolicyConfig,
 }
 
@@ -64,6 +66,14 @@ pub struct AlertConfig {
     pub stale_success_after_hours: u64,
     #[serde(default = "default_enable_macos_notifications")]
     pub enable_macos_notifications: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct RunnerConfig {
+    #[serde(default)]
+    pub approved_targets: Vec<String>,
+    #[serde(default = "default_notify_after_cycle")]
+    pub notify_after_cycle: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -148,6 +158,15 @@ impl Default for AlertConfig {
     }
 }
 
+impl Default for RunnerConfig {
+    fn default() -> Self {
+        Self {
+            approved_targets: Vec::new(),
+            notify_after_cycle: default_notify_after_cycle(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub enum ConfigSource {
     Explicit(PathBuf),
@@ -200,6 +219,7 @@ impl Default for AppConfig {
             },
             managed_targets: Vec::new(),
             alerts: AlertConfig::default(),
+            runner: RunnerConfig::default(),
             policy: PolicyConfig::default(),
         }
     }
@@ -230,6 +250,10 @@ fn default_stale_success_after_hours() -> u64 {
 }
 
 fn default_enable_macos_notifications() -> bool {
+    true
+}
+
+fn default_notify_after_cycle() -> bool {
     true
 }
 
@@ -371,6 +395,13 @@ fn normalize_config(mut config: AppConfig) -> Result<AppConfig> {
         .iter()
         .map(|path| expand_path(path))
         .collect();
+    config.runner.approved_targets = config
+        .runner
+        .approved_targets
+        .iter()
+        .map(|target| target.trim().to_string())
+        .filter(|target| !target.is_empty())
+        .collect();
     config.managed_targets = config
         .managed_targets
         .iter()
@@ -467,6 +498,12 @@ fn normalize_config(mut config: AppConfig) -> Result<AppConfig> {
     }
     if config.alerts.stale_success_after_hours == 0 {
         bail!("alerts.stale_success_after_hours must be greater than zero");
+    }
+    let mut approved_targets = BTreeSet::new();
+    for selector in &config.runner.approved_targets {
+        if !approved_targets.insert(selector.clone()) {
+            bail!("runner.approved_targets must be unique: {selector}");
+        }
     }
     if config.scan.max_examples == 0 {
         bail!("scan.max_examples must be greater than zero");

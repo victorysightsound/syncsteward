@@ -6,11 +6,11 @@ use crate::inventory::build_target_inventory;
 use crate::model::{
     ActionOutcome, ActionStep, ActionStepStatus, ActionTarget, AddManagedTargetReport, AlertRecord,
     AlertReport, AlertSeverity, ArtifactReport, CheckStatus, ConfigScaffoldReport, ControlAction,
-    ControlReport, EnsureTargetIdsReport, LaunchAgentStatus, LogAcknowledgeReport, LogSummary,
-    ManagedTargetIdAssignment, ManagedTargetIdAssignmentReason, NotifyAlertsReport, PolicySummary,
-    PreflightCheck, PreflightReport, RelocateManagedTargetReport, RemoteStatus, ServiceState,
-    StatusReport, TargetBlocker, TargetCheckReport, TargetCheckSetReport, TargetEvaluation,
-    TargetRunReport,
+    ControlReport, CycleSkippedTarget, EnsureTargetIdsReport, LaunchAgentStatus,
+    LogAcknowledgeReport, LogSummary, ManagedTargetIdAssignment, ManagedTargetIdAssignmentReason,
+    NotifyAlertsReport, PolicySummary, PreflightCheck, PreflightReport,
+    RelocateManagedTargetReport, RemoteStatus, RunCycleReport, ServiceState, StatusReport,
+    TargetBlocker, TargetCheckReport, TargetCheckSetReport, TargetEvaluation, TargetRunReport,
 };
 use crate::state::{
     TargetRunState, load_state, matches_acknowledged_log, save_acknowledged_log, save_target_run,
@@ -361,6 +361,89 @@ pub fn run_target(
     };
     record_target_run(&loaded.config, &report);
     Ok(report)
+}
+
+pub fn run_cycle(config_path: Option<&Path>, dry_run: bool) -> Result<RunCycleReport> {
+    let loaded = load_config(config_path)?;
+    let config_source = loaded.source.description();
+    let preflight = evaluate_preflight(collect_status(&loaded.config, config_source.clone()));
+    let inventory = build_target_inventory(&loaded.config, config_source.clone())?;
+    let approved_selectors = loaded.config.runner.approved_targets.clone();
+
+    let mut target_runs = Vec::new();
+    let mut skipped_targets = Vec::new();
+
+    for selector in &approved_selectors {
+        let selector_path = expand_path(Path::new(selector));
+        let resolved = inventory
+            .targets
+            .iter()
+            .find(|target| target_matches_selector(target, selector, &selector_path))
+            .cloned();
+
+        let Some(target) = resolved else {
+            skipped_targets.push(CycleSkippedTarget {
+                selector: selector.clone(),
+                summary: format!("approved target selector {} did not resolve", selector),
+                detail: "update runner.approved_targets so every selector matches a current target"
+                    .to_string(),
+            });
+            continue;
+        };
+
+        let selector_for_run = target
+            .target_id
+            .clone()
+            .unwrap_or_else(|| target.name.clone());
+        let report = run_target(config_path, &selector_for_run, dry_run)?;
+        if report.outcome == ActionOutcome::Blocked
+            && !report.evaluation.blockers.is_empty()
+            && report
+                .steps
+                .iter()
+                .all(|step| step.status == ActionStepStatus::Blocked)
+        {
+            skipped_targets.push(CycleSkippedTarget {
+                selector: selector.clone(),
+                summary: format!(
+                    "{} was not ready during cycle execution",
+                    report.evaluation.target.name
+                ),
+                detail: format_target_blockers(&report.evaluation.blockers),
+            });
+        }
+        target_runs.push(report);
+    }
+
+    let alert_report = evaluate_alerts(&loaded.config, config_source.clone())?;
+    let notification = if loaded.config.runner.notify_after_cycle {
+        Some(notify_alerts(config_path, dry_run)?)
+    } else {
+        None
+    };
+
+    let outcome = summarize_cycle_outcome(&target_runs, &skipped_targets, notification.as_ref());
+    let summary = summarize_cycle_report(
+        &approved_selectors,
+        &target_runs,
+        &skipped_targets,
+        &alert_report.alerts,
+        dry_run,
+        outcome,
+    );
+
+    Ok(RunCycleReport {
+        config_source,
+        dry_run,
+        outcome,
+        summary,
+        preflight_ready: preflight.ready,
+        approved_target_count: approved_selectors.len(),
+        target_runs,
+        skipped_targets,
+        alerts: alert_report.alerts,
+        notification,
+    })
 }
 
 pub fn pause(config_path: Option<&Path>, target: ActionTarget) -> Result<ControlReport> {
@@ -2389,6 +2472,72 @@ fn summarize_target_run(
                 .count();
             format!("{mode} failed for {target_name} ({failed} failed steps)")
         }
+    }
+}
+
+fn summarize_cycle_outcome(
+    target_runs: &[TargetRunReport],
+    skipped_targets: &[CycleSkippedTarget],
+    notification: Option<&NotifyAlertsReport>,
+) -> ActionOutcome {
+    if target_runs
+        .iter()
+        .any(|report| report.outcome == ActionOutcome::Failed)
+        || notification.is_some_and(|report| report.outcome == ActionOutcome::Failed)
+    {
+        ActionOutcome::Failed
+    } else if !skipped_targets.is_empty()
+        || target_runs
+            .iter()
+            .any(|report| report.outcome == ActionOutcome::Blocked)
+    {
+        ActionOutcome::Blocked
+    } else if target_runs.is_empty()
+        || target_runs
+            .iter()
+            .all(|report| report.outcome == ActionOutcome::NoOp)
+    {
+        ActionOutcome::NoOp
+    } else {
+        ActionOutcome::Success
+    }
+}
+
+fn summarize_cycle_report(
+    approved_selectors: &[String],
+    target_runs: &[TargetRunReport],
+    skipped_targets: &[CycleSkippedTarget],
+    alerts: &[AlertRecord],
+    dry_run: bool,
+    outcome: ActionOutcome,
+) -> String {
+    let mode = if dry_run { "dry run" } else { "cycle" };
+    match outcome {
+        ActionOutcome::Success => format!(
+            "{mode} succeeded for {} approved targets ({} active alerts)",
+            target_runs.len(),
+            alerts.len()
+        ),
+        ActionOutcome::NoOp => {
+            if approved_selectors.is_empty() {
+                "no approved targets are configured for cycle execution".to_string()
+            } else {
+                format!(
+                    "{mode} made no changes for {} approved targets",
+                    approved_selectors.len()
+                )
+            }
+        }
+        ActionOutcome::Blocked => format!(
+            "{mode} blocked for {} approved targets ({} skipped, {} active alerts)",
+            approved_selectors.len(),
+            skipped_targets.len(),
+            alerts.len()
+        ),
+        ActionOutcome::Failed => format!(
+            "{mode} failed for {} approved targets",
+            approved_selectors.len()
+        ),
     }
 }
 

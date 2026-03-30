@@ -30,6 +30,7 @@ SyncSteward does not restart sync automatically. The current build exposes:
 - config scaffolding so recommended folder policies become a real SyncSteward config file
 - target-scoped readiness and blocker reports before any selective re-enablement
 - single-target execution for approved `backup_only` targets, with dry-run support, legacy lock protection, and per-target audit/state records
+- approved-target cycle execution from config, so future daemon and UI layers can drive one guarded orchestration entry point
 - alert evaluation for stale or missing target runs, plus local notification support
 
 ## Interfaces
@@ -80,6 +81,15 @@ SyncSteward can now mutate that managed-target config directly:
 - `add-managed-target` registers a new curated path and assigns its durable ID immediately
 - `relocate-managed-target` updates a managed target by ID, name, or current path while preserving the same durable ID and run history
 
+## Approved Runner
+
+SyncSteward now has a config-backed cycle command for the approved healthy subset.
+
+- `runner.approved_targets` defines the exact targets the guarded cycle is allowed to execute
+- `run-cycle` reuses the same single-target guarded execution path instead of inventing a second sync engine
+- this is the first daemon-ready entry point for future scheduling, menu bar UI actions, and MCP orchestration
+- broad legacy folders can stay on `hold` while the approved subset keeps running safely
+
 ## Commands
 
 ```bash
@@ -92,6 +102,7 @@ cargo run -p syncsteward-cli -- run-target Pictures --dry-run
 cargo run -p syncsteward-cli -- run-target .memloft --dry-run
 cargo run -p syncsteward-cli -- alerts
 cargo run -p syncsteward-cli -- notify-alerts --dry-run
+cargo run -p syncsteward-cli -- run-cycle --dry-run
 cargo run -p syncsteward-cli -- acknowledge-latest-log
 cargo run -p syncsteward-cli -- scaffold-config
 cargo run -p syncsteward-cli -- ensure-target-ids

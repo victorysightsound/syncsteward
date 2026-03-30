@@ -26,6 +26,7 @@ The app is responsible for:
 - turning recommended target policies into an explicit managed config
 - explaining readiness and blockers per target before any selective re-enablement
 - assigning durable IDs to managed targets as groundwork for future relocate/adopt workflows
+- defining an approved target set and running it through one guarded cycle command
 - notifications and failure escalation
 - future folder policy management and controlled re-enablement
 
@@ -72,6 +73,7 @@ Configuration now carries both operator paths and safety policy:
 - target-specific exclusion rules for protected bundles and subtrees
 - target-specific snapshot rules for runtime SQLite-backed targets
 - alert thresholds and notification toggles
+- runner settings for the approved target set and post-cycle notification behavior
 
 ### Status
 
@@ -199,10 +201,17 @@ Monitoring should build on the same state model rather than inventing a separate
 - stale-success thresholds should be configurable
 - local notifications should summarize active alerts without hiding the underlying details
 
+The next daemon-ready layer should also stay inside the same guarded model:
+
+- approved targets should be declared explicitly in config rather than inferred at runtime
+- one guarded cycle command should evaluate preflight, run only approved executable targets, and then evaluate alerts
+- future scheduling, menu bar actions, and MCP orchestration should call that cycle command instead of reimplementing sync sequencing
+- cycle execution should record per-target outcomes and preserve skipped-selector details when config refers to a target that no longer resolves cleanly
+
 ## Planned Waves
 
 1. Health and preflight inspection
 2. Coordinated pause/resume and structured audit logging
-3. Per-folder sync policy, managed subtargets, durable target IDs, managed-target lifecycle commands, config scaffolding, file-class overrides, and quarantine management
-4. Notifications and escalation
+3. Per-folder sync policy, managed subtargets, durable target IDs, managed-target lifecycle commands, config scaffolding, file-class overrides, quarantine management, and approved-target execution
+4. Notifications, escalation, and daemon-ready approved-target cycle orchestration
 5. Menu bar UI and operator workflow polish

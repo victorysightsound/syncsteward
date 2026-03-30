@@ -4,10 +4,11 @@ use syncsteward_core::{
     ActionOutcome, ActionStepStatus, ActionTarget, AddManagedTargetReport, AlertReport,
     AlertSeverity, CheckStatus, ConfigScaffoldReport, ControlReport, EnsureTargetIdsReport,
     LogAcknowledgeReport, NotifyAlertsReport, PolicyMode, PreflightReport,
-    RelocateManagedTargetReport, StatusReport, SyncTargetInventoryReport, TargetCheckReport,
-    TargetCheckSetReport, TargetRunReport, acknowledge_latest_log, add_managed_target, alerts,
-    check_target, check_targets, ensure_target_ids, notify_alerts, pause, preflight,
-    relocate_managed_target, resume, run_target, scaffold_config, status, targets,
+    RelocateManagedTargetReport, RunCycleReport, StatusReport, SyncTargetInventoryReport,
+    TargetCheckReport, TargetCheckSetReport, TargetRunReport, acknowledge_latest_log,
+    add_managed_target, alerts, check_target, check_targets, ensure_target_ids, notify_alerts,
+    pause, preflight, relocate_managed_target, resume, run_cycle, run_target, scaffold_config,
+    status, targets,
 };
 
 #[derive(Debug, Parser)]
@@ -66,6 +67,13 @@ enum Command {
     /// Run one approved target with preflight and policy gating.
     RunTarget {
         target: String,
+        #[arg(long)]
+        dry_run: bool,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Run one guarded cycle for the approved target set in SyncSteward config.
+    RunCycle {
         #[arg(long)]
         dry_run: bool,
         #[arg(long)]
@@ -297,6 +305,20 @@ fn run() -> i32 {
                 }
             } else {
                 print_run_target(&report);
+            }
+            action_exit_code(report.outcome)
+        }
+        Command::RunCycle { dry_run, json } => {
+            let report = match run_cycle(cli.config.as_deref(), dry_run) {
+                Ok(report) => report,
+                Err(error) => return fatal_error(&error.to_string()),
+            };
+            if json {
+                if print_json(&report).is_err() {
+                    return fatal_error("failed to serialize run-cycle report as JSON");
+                }
+            } else {
+                print_run_cycle(&report);
             }
             action_exit_code(report.outcome)
         }
@@ -674,6 +696,51 @@ fn print_run_target(report: &TargetRunReport) {
             step.summary
         );
         println!("      {}", step.detail);
+    }
+}
+
+fn print_run_cycle(report: &RunCycleReport) {
+    println!("SyncSteward Run Cycle: {:?}", report.outcome);
+    println!("{}", report.summary);
+    println!("Config source: {}", report.config_source);
+    println!("Dry run: {}", if report.dry_run { "yes" } else { "no" });
+    println!(
+        "Preflight ready: {}",
+        if report.preflight_ready { "yes" } else { "no" }
+    );
+    println!("Approved targets: {}", report.approved_target_count);
+    if report.target_runs.is_empty() {
+        println!("Target runs: none");
+    } else {
+        println!("Target runs:");
+        for target_run in &report.target_runs {
+            println!(
+                "  - [{}] {}",
+                match target_run.outcome {
+                    ActionOutcome::Success => "SUCCESS",
+                    ActionOutcome::NoOp => "NOOP",
+                    ActionOutcome::Blocked => "BLOCKED",
+                    ActionOutcome::Failed => "FAILED",
+                },
+                target_run.evaluation.target.name
+            );
+            println!("    {}", target_run.summary);
+        }
+    }
+    if report.skipped_targets.is_empty() {
+        println!("Skipped targets: none");
+    } else {
+        println!("Skipped targets:");
+        for skipped in &report.skipped_targets {
+            println!("- {}", skipped.selector);
+            println!("  {}", skipped.summary);
+            println!("  {}", skipped.detail);
+        }
+    }
+    println!("Active alerts: {}", report.alerts.len());
+    if let Some(notification) = &report.notification {
+        println!("Notification: {:?}", notification.outcome);
+        println!("  {}", notification.summary);
     }
 }
 

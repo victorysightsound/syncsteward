@@ -32,6 +32,7 @@
 - run preflight and folder gating before each sync
 - add single-target execution for approved backup-only targets with dry-run support
 - record per-target last outcome in state and audit
+- define the approved target set in config and add one guarded cycle command for daemon/UI orchestration
 - allow folder-scoped rebaseline instead of broad `--resync`
 - add quarantine handling for conflict and `safeBackup` artifacts
 - implement explicit relocate flows for managed targets whose root paths move
@@ -43,6 +44,7 @@
 - store sync history, health transitions, and acknowledgements
 - expose alert state in both CLI and MCP
 - ship a first local notification path for active alerts
+- make the approved-target cycle the future daemon/menu bar execution entry point
 - refine alert deduplication and escalation after the first notification slice lands
 
 ## Phase 5: UI

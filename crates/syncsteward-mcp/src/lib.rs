@@ -11,13 +11,15 @@ use std::path::PathBuf;
 use syncsteward_core::{
     ActionTarget, AddManagedTargetReport, AlertReport, ConfigScaffoldReport, ControlReport,
     EnsureTargetIdsReport, LogAcknowledgeReport, NotifyAlertsReport, PolicyMode, PreflightReport,
-    RelocateManagedTargetReport, StatusReport, SyncTargetInventoryReport, TargetCheckReport,
-    TargetCheckSetReport, TargetRunReport, acknowledge_latest_log as core_acknowledge_latest_log,
+    RelocateManagedTargetReport, RunCycleReport, StatusReport, SyncTargetInventoryReport,
+    TargetCheckReport, TargetCheckSetReport, TargetRunReport,
+    acknowledge_latest_log as core_acknowledge_latest_log,
     add_managed_target as core_add_managed_target, alerts as core_alerts,
     check_target as core_check_target, check_targets as core_check_targets,
     ensure_target_ids as core_ensure_target_ids, notify_alerts as core_notify_alerts, pause,
     preflight, relocate_managed_target as core_relocate_managed_target, resume,
-    run_target as core_run_target, scaffold_config as core_scaffold_config, status, targets,
+    run_cycle as core_run_cycle, run_target as core_run_target,
+    scaffold_config as core_scaffold_config, status, targets,
 };
 
 type McpResult<T> = Result<Json<T>, String>;
@@ -192,6 +194,23 @@ impl SyncStewardMcpServer {
         let config_path = self.config_path.clone();
         let report = tokio::task::spawn_blocking(move || {
             core_run_target(config_path.as_deref(), &request.target, request.dry_run)
+        })
+        .await
+        .map_err(|error| error.to_string())?
+        .map_err(|error| error.to_string())?;
+        Ok(Json(report))
+    }
+
+    #[tool(
+        description = "Run one guarded cycle for the approved target set in SyncSteward config. Supports dry-run mode for safe validation."
+    )]
+    async fn run_cycle(
+        &self,
+        Parameters(request): Parameters<DryRunRequest>,
+    ) -> McpResult<RunCycleReport> {
+        let config_path = self.config_path.clone();
+        let report = tokio::task::spawn_blocking(move || {
+            core_run_cycle(config_path.as_deref(), request.dry_run)
         })
         .await
         .map_err(|error| error.to_string())?

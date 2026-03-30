@@ -212,6 +212,38 @@ Supports:
 - human output
 - JSON output
 
+### `syncsteward run-cycle`
+
+Run the guarded execution cycle for the approved target set in SyncSteward config.
+
+Outputs:
+
+- config source
+- dry-run flag
+- overall cycle outcome
+- summary of the cycle result
+- preflight readiness at cycle start
+- approved target count
+- per-target run reports
+- skipped selectors that did not resolve to a current target
+- current alert set after the cycle
+- optional notification result
+
+Rules:
+
+- reads the approved target list from config instead of taking an ad hoc target list on the command line
+- reuses the same guarded single-target execution path as `run-target`
+- only runs targets that still resolve cleanly and pass target readiness
+- records skipped selectors when config references a missing or obsolete target
+- may send post-cycle alert notifications when enabled in config
+- is the intended orchestration entry point for future daemon and UI layers
+
+Supports:
+
+- `--dry-run`
+- human output
+- JSON output
+
 ### `syncsteward alerts`
 
 Evaluate active alerts from current preflight state and per-target run history.
@@ -373,6 +405,10 @@ Read the same alert evaluation surface exposed by the CLI.
 ### `notify_alerts`
 
 Send the same guarded local alert notification exposed by the CLI, including dry-run support.
+
+### `run_cycle`
+
+Run the same approved-target guarded cycle exposed by the CLI, including dry-run support.
 
 ### `acknowledge_latest_log`
 
