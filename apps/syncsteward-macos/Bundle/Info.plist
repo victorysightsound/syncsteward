@@ -8,6 +8,8 @@
     <string>SyncSteward</string>
     <key>CFBundleExecutable</key>
     <string>SyncSteward</string>
+    <key>CFBundleIconFile</key>
+    <string>SyncSteward.icns</string>
     <key>CFBundleIdentifier</key>
     <string>com.victorysightsound.syncsteward</string>
     <key>CFBundleInfoDictionaryVersion</key>

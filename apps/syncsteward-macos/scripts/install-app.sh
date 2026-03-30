@@ -6,6 +6,8 @@ package_path="$repo_root/apps/syncsteward-macos"
 bin_dir="$(swift build --package-path "$package_path" --show-bin-path)"
 ui_bin="$bin_dir/syncsteward-macos"
 cli_bin="$repo_root/target/debug/syncsteward-cli"
+iconset_dir="$package_path/Bundle/AppIcon.iconset"
+icns_source="$package_path/Bundle/SyncSteward.icns"
 bundle_root="$HOME/Applications/SyncSteward.app"
 contents_dir="$bundle_root/Contents"
 macos_dir="$contents_dir/MacOS"
@@ -16,8 +18,12 @@ launcher_path="$macos_dir/SyncSteward"
 swift build --package-path "$package_path" >/dev/null
 cargo build -p syncsteward-cli >/dev/null
 
+python3 "$repo_root/branding/generate_brand_assets.py" >/dev/null
+iconutil -c icns "$iconset_dir" -o "$icns_source"
+
 mkdir -p "$macos_dir" "$resources_dir"
 cp "$plist_source" "$contents_dir/Info.plist"
+cp "$icns_source" "$resources_dir/SyncSteward.icns"
 
 cat >"$launcher_path" <<EOF
 #!/bin/zsh

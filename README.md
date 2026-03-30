@@ -89,6 +89,18 @@ That installs:
 
 The installer keeps the app bundle thin. It launches the current dev-built SwiftUI shell and points it at the current dev-built `syncsteward-cli`.
 
+## Brand Assets
+
+SyncSteward now includes a reproducible brand asset pack under:
+
+- [branding](/Users/johndeaton/projects/syncsteward/branding)
+
+That pack includes:
+
+- square icon exports for GitHub and general distribution use
+- macOS `AppIcon.iconset` sources plus `SyncSteward.icns`
+- GitHub/social preview images in common wide and square formats
+
 ## Protected Bundles
 
 SyncSteward now applies first-class target exclusions for native Apple media libraries:
