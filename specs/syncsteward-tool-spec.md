@@ -91,6 +91,11 @@ Supports:
 - human output
 - JSON output
 
+Rules:
+
+- this is the preferred read surface for dashboard-style UI consumers
+- future native UI shells should consume this contract instead of stitching together multiple health commands on their own
+
 ### `syncsteward check-targets`
 
 Explain readiness and blockers for every configured sync target.

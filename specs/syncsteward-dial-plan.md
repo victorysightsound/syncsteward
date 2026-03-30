@@ -57,6 +57,7 @@
 ## Phase 5: UI
 
 - add a menu bar app
+- start with a native macOS shell that reads the composed `overview` surface and exposes only safe refresh/open actions
 - show green/yellow/red health state
 - expose sync now, pause, resume, open logs, and reveal conflicts
 - keep all real logic in the shared core plus CLI and MCP layers

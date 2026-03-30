@@ -36,6 +36,7 @@ SyncSteward does not restart sync automatically. The current build exposes:
 - approved-target cycle execution from config, so future daemon and UI layers can drive one guarded orchestration entry point
 - daemon-ready `runner-tick` scheduling that only executes the approved cycle when it is due
 - alert evaluation for stale or missing target runs, plus deduplicated local notification support
+- a native macOS menu bar shell that reads the composed `overview` contract without adding separate sync logic
 
 ## Interfaces
 
@@ -45,6 +46,33 @@ SyncSteward does not restart sync automatically. The current build exposes:
 UI comes later, after the CLI and MCP surfaces are stable.
 
 The `overview` surface is the first stable dashboard-style contract for that future UI.
+
+## macOS Shell
+
+SyncSteward now includes a first native macOS shell under:
+
+- [apps/syncsteward-macos](/Users/johndeaton/projects/syncsteward/apps/syncsteward-macos)
+
+The current shell is intentionally small:
+
+- SwiftUI menu bar app
+- reads `syncsteward-cli overview --json`
+- shows preflight, runner, approved-target, recent-run, and alert state
+- opens the live config and state folder
+- does not introduce any new sync logic
+
+It resolves the CLI in this order:
+
+- `SYNCSTEWARD_CLI_PATH`
+- `~/projects/syncsteward/target/debug/syncsteward-cli`
+- `~/bin/syncsteward-cli`
+- `syncsteward-cli` from `PATH`
+
+Build it with:
+
+```bash
+swift build --package-path apps/syncsteward-macos
+```
 
 ## Protected Bundles
 
@@ -131,6 +159,7 @@ cargo run -p syncsteward-cli -- resume --target all
 cargo run -p syncsteward-cli -- overview --json
 cargo run -p syncsteward-cli -- status --json
 cargo run -p syncsteward-cli -- mcp stdio
+swift build --package-path apps/syncsteward-macos
 ```
 
 ## Default Environment Assumptions
