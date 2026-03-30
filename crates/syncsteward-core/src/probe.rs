@@ -9,11 +9,13 @@ use crate::model::{
     ControlReport, CycleSkippedTarget, EnsureTargetIdsReport, LaunchAgentStatus,
     LogAcknowledgeReport, LogSummary, ManagedTargetIdAssignment, ManagedTargetIdAssignmentReason,
     NotifyAlertsReport, PolicySummary, PreflightCheck, PreflightReport,
-    RelocateManagedTargetReport, RemoteStatus, RunCycleReport, ServiceState, StatusReport,
-    TargetBlocker, TargetCheckReport, TargetCheckSetReport, TargetEvaluation, TargetRunReport,
+    RelocateManagedTargetReport, RemoteStatus, RunCycleReport, RunnerTickReport, ServiceState,
+    StatusReport, TargetBlocker, TargetCheckReport, TargetCheckSetReport, TargetEvaluation,
+    TargetRunReport,
 };
 use crate::state::{
-    TargetRunState, load_state, matches_acknowledged_log, save_acknowledged_log, save_target_run,
+    RunnerCycleState, RunnerTickState, TargetRunState, load_state, matches_acknowledged_log,
+    save_acknowledged_log, save_runner_cycle, save_runner_tick, save_target_run,
 };
 use anyhow::{Result, anyhow};
 use serde::Serialize;
@@ -179,6 +181,15 @@ pub fn run_target(
     selector: &str,
     dry_run: bool,
 ) -> Result<TargetRunReport> {
+    run_target_inner(config_path, selector, dry_run, false)
+}
+
+fn run_target_inner(
+    config_path: Option<&Path>,
+    selector: &str,
+    dry_run: bool,
+    reuse_existing_lock: bool,
+) -> Result<TargetRunReport> {
     let loaded = load_config(config_path)?;
     let preflight = evaluate_preflight(collect_status(&loaded.config, loaded.source.description()));
     let inventory = build_target_inventory(&loaded.config, loaded.source.description())?;
@@ -247,27 +258,38 @@ pub fn run_target(
     }
 
     let mut acquired_lock = None;
-    steps.push(acquire_legacy_lock(&loaded.config, &mut acquired_lock)?);
-    if steps
-        .last()
-        .is_some_and(|step| step.status == ActionStepStatus::Blocked)
-    {
-        let report = TargetRunReport {
-            config_source: loaded.source.description(),
-            selector: selector.to_string(),
-            dry_run,
-            outcome: ActionOutcome::Blocked,
-            summary: format!(
-                "{} blocked for {}",
-                if dry_run { "dry run" } else { "run" },
-                evaluation.target.name
+    if reuse_existing_lock {
+        steps.push(skipped_step(
+            "legacy_lock",
+            format!(
+                "reusing cycle-held legacy lock {}",
+                loaded.config.legacy_lock_path.display()
             ),
-            preflight_ready: preflight.ready,
-            evaluation: evaluation.clone(),
-            steps,
-        };
-        record_target_run(&loaded.config, &report);
-        return Ok(report);
+            "run-cycle already owns the legacy sync lock for this execution".to_string(),
+        ));
+    } else {
+        steps.push(acquire_legacy_lock(&loaded.config, &mut acquired_lock)?);
+        if steps
+            .last()
+            .is_some_and(|step| step.status == ActionStepStatus::Blocked)
+        {
+            let report = TargetRunReport {
+                config_source: loaded.source.description(),
+                selector: selector.to_string(),
+                dry_run,
+                outcome: ActionOutcome::Blocked,
+                summary: format!(
+                    "{} blocked for {}",
+                    if dry_run { "dry run" } else { "run" },
+                    evaluation.target.name
+                ),
+                preflight_ready: preflight.ready,
+                evaluation: evaluation.clone(),
+                steps,
+            };
+            record_target_run(&loaded.config, &report);
+            return Ok(report);
+        }
     }
 
     let Some(host) = probe_remote_service(&loaded.config).selected_host else {
@@ -366,14 +388,25 @@ pub fn run_target(
 pub fn run_cycle(config_path: Option<&Path>, dry_run: bool) -> Result<RunCycleReport> {
     let loaded = load_config(config_path)?;
     let config_source = loaded.source.description();
+    let started_at_unix_ms = now_unix_ms();
     let preflight = evaluate_preflight(collect_status(&loaded.config, config_source.clone()));
     let inventory = build_target_inventory(&loaded.config, config_source.clone())?;
     let approved_selectors = loaded.config.runner.approved_targets.clone();
 
     let mut target_runs = Vec::new();
     let mut skipped_targets = Vec::new();
+    let mut cycle_lock = None;
+    let cycle_lock_step = acquire_legacy_lock(&loaded.config, &mut cycle_lock)?;
+    if cycle_lock_step.status == ActionStepStatus::Blocked {
+        skipped_targets.push(CycleSkippedTarget {
+            selector: "*cycle*".to_string(),
+            summary: cycle_lock_step.summary,
+            detail: cycle_lock_step.detail,
+        });
+    }
 
-    for selector in &approved_selectors {
+    if skipped_targets.is_empty() {
+        for selector in &approved_selectors {
         let selector_path = expand_path(Path::new(selector));
         let resolved = inventory
             .targets
@@ -395,7 +428,7 @@ pub fn run_cycle(config_path: Option<&Path>, dry_run: bool) -> Result<RunCycleRe
             .target_id
             .clone()
             .unwrap_or_else(|| target.name.clone());
-        let report = run_target(config_path, &selector_for_run, dry_run)?;
+        let report = run_target_inner(config_path, &selector_for_run, dry_run, true)?;
         if report.outcome == ActionOutcome::Blocked
             && !report.evaluation.blockers.is_empty()
             && report
@@ -414,6 +447,9 @@ pub fn run_cycle(config_path: Option<&Path>, dry_run: bool) -> Result<RunCycleRe
         }
         target_runs.push(report);
     }
+    }
+
+    drop(cycle_lock);
 
     let alert_report = evaluate_alerts(&loaded.config, config_source.clone())?;
     let notification = if loaded.config.runner.notify_after_cycle {
@@ -432,7 +468,7 @@ pub fn run_cycle(config_path: Option<&Path>, dry_run: bool) -> Result<RunCycleRe
         outcome,
     );
 
-    Ok(RunCycleReport {
+    let report = RunCycleReport {
         config_source,
         dry_run,
         outcome,
@@ -443,7 +479,132 @@ pub fn run_cycle(config_path: Option<&Path>, dry_run: bool) -> Result<RunCycleRe
         skipped_targets,
         alerts: alert_report.alerts,
         notification,
-    })
+    };
+    record_cycle_run(&loaded.config, &report, started_at_unix_ms);
+    Ok(report)
+}
+
+pub fn runner_tick(config_path: Option<&Path>, dry_run: bool) -> Result<RunnerTickReport> {
+    let loaded = load_config(config_path)?;
+    let config_source = loaded.source.description();
+    let state = load_state(&loaded.config.state_path)?;
+    let now_unix_ms = now_unix_ms();
+    let interval_ms = u128::from(loaded.config.runner.cycle_interval_minutes) * 60 * 1000;
+    let last_live_cycle_finished_at_unix_ms = state.runner.last_live_cycle_finished_at_unix_ms;
+    let (due, next_due_at_unix_ms) = runner_due_status(
+        last_live_cycle_finished_at_unix_ms,
+        interval_ms,
+        now_unix_ms,
+    );
+
+    let mut steps = Vec::new();
+    let (outcome, summary, preflight_ready, cycle, alerts, notification) = if due {
+        steps.push(applied_step(
+            "runner_due",
+            "approved target cycle is due".to_string(),
+            match last_live_cycle_finished_at_unix_ms {
+                Some(last_finished) => format!(
+                    "last live cycle finished at {last_finished}; cadence is {} minutes",
+                    loaded.config.runner.cycle_interval_minutes
+                ),
+                None => "no prior live cycle recorded".to_string(),
+            },
+        ));
+
+        let cycle = run_cycle(config_path, dry_run)?;
+        steps.push(applied_step(
+            "runner_cycle",
+            format!(
+                "executed approved target cycle ({})",
+                describe_action_outcome(cycle.outcome)
+            ),
+            cycle.summary.clone(),
+        ));
+
+        (
+            cycle.outcome,
+            summarize_runner_tick(true, dry_run, cycle.outcome, &cycle.alerts),
+            cycle.preflight_ready,
+            Some(cycle.clone()),
+            cycle.alerts.clone(),
+            cycle.notification.clone(),
+        )
+    } else {
+        let next_due_at_unix_ms = next_due_at_unix_ms;
+        let alert_report = evaluate_alerts(&loaded.config, config_source.clone())?;
+        steps.push(skipped_step(
+            "runner_due",
+            "approved target cycle is not due yet".to_string(),
+            match next_due_at_unix_ms {
+                Some(next_due) => format!(
+                    "next due at {next_due}; cadence is {} minutes",
+                    loaded.config.runner.cycle_interval_minutes
+                ),
+                None => "next due time is not available".to_string(),
+            },
+        ));
+
+        let notification = if loaded.config.runner.notify_after_tick {
+            let report = notify_alerts(config_path, dry_run)?;
+            steps.push(match report.outcome {
+                ActionOutcome::NoOp => skipped_step(
+                    "runner_notify_alerts",
+                    "no post-tick notification sent".to_string(),
+                    report.summary.clone(),
+                ),
+                ActionOutcome::Success => applied_step(
+                    "runner_notify_alerts",
+                    "sent post-tick notification".to_string(),
+                    report.summary.clone(),
+                ),
+                ActionOutcome::Failed => failed_step(
+                    "runner_notify_alerts",
+                    "failed to send post-tick notification".to_string(),
+                    report.summary.clone(),
+                ),
+                ActionOutcome::Blocked => blocked_step(
+                    "runner_notify_alerts",
+                    "post-tick notification was blocked".to_string(),
+                    report.summary.clone(),
+                ),
+            });
+            Some(report)
+        } else {
+            steps.push(skipped_step(
+                "runner_notify_alerts",
+                "post-tick notifications are disabled".to_string(),
+                "runner.notify_after_tick is false".to_string(),
+            ));
+            None
+        };
+
+        (
+            ActionOutcome::NoOp,
+            summarize_runner_tick(false, dry_run, ActionOutcome::NoOp, &alert_report.alerts),
+            alert_report.preflight_ready,
+            None,
+            alert_report.alerts,
+            notification,
+        )
+    };
+
+    let report = RunnerTickReport {
+        config_source,
+        dry_run,
+        outcome,
+        summary,
+        due,
+        cycle_interval_minutes: loaded.config.runner.cycle_interval_minutes,
+        last_live_cycle_finished_at_unix_ms,
+        next_due_at_unix_ms,
+        preflight_ready,
+        cycle,
+        alerts,
+        notification,
+        steps,
+    };
+    record_runner_tick(&loaded.config, &report);
+    Ok(report)
 }
 
 pub fn pause(config_path: Option<&Path>, target: ActionTarget) -> Result<ControlReport> {
@@ -1877,13 +2038,15 @@ fn record_audit_event(config: &AppConfig, report: &mut ControlReport) {
 }
 
 fn record_target_run(config: &AppConfig, report: &TargetRunReport) {
-    let finished_at_unix_ms = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis();
     if let Err(error) = append_target_run_audit(&config.audit_log_path, report) {
         eprintln!("syncsteward: failed to append target run audit: {error}");
     }
+
+    if report.dry_run {
+        return;
+    }
+
+    let finished_at_unix_ms = now_unix_ms();
 
     let state = TargetRunState {
         target_name: report.evaluation.target.name.clone(),
@@ -1891,9 +2054,9 @@ fn record_target_run(config: &AppConfig, report: &TargetRunReport) {
         local_path: report.evaluation.target.local_path.clone(),
         effective_mode: report.evaluation.effective_mode,
         outcome: report.outcome,
-        dry_run: report.dry_run,
+        dry_run: false,
         finished_at_unix_ms,
-        last_success_at_unix_ms: if report.outcome == ActionOutcome::Success && !report.dry_run {
+        last_success_at_unix_ms: if report.outcome == ActionOutcome::Success {
             Some(finished_at_unix_ms)
         } else {
             None
@@ -1904,6 +2067,55 @@ fn record_target_run(config: &AppConfig, report: &TargetRunReport) {
     let state_key = target_state_key(&report.evaluation.target);
     if let Err(error) = save_target_run(&config.state_path, &state_key, state) {
         eprintln!("syncsteward: failed to record target run state: {error}");
+    }
+}
+
+fn record_cycle_run(config: &AppConfig, report: &RunCycleReport, started_at_unix_ms: u128) {
+    let finished_at_unix_ms = now_unix_ms();
+    if let Err(error) = append_cycle_run_audit(&config.audit_log_path, report) {
+        eprintln!("syncsteward: failed to append cycle audit: {error}");
+    }
+
+    let state = RunnerCycleState {
+        dry_run: report.dry_run,
+        started_at_unix_ms,
+        finished_at_unix_ms,
+        outcome: report.outcome,
+        approved_target_count: report.approved_target_count,
+        active_alert_count: report.alerts.len(),
+        summary: report.summary.clone(),
+    };
+
+    let last_live_cycle_finished_at_unix_ms = if !report.dry_run {
+        Some(finished_at_unix_ms)
+    } else {
+        None
+    };
+
+    if let Err(error) =
+        save_runner_cycle(&config.state_path, state, last_live_cycle_finished_at_unix_ms)
+    {
+        eprintln!("syncsteward: failed to record cycle state: {error}");
+    }
+}
+
+fn record_runner_tick(config: &AppConfig, report: &RunnerTickReport) {
+    let finished_at_unix_ms = now_unix_ms();
+    if let Err(error) = append_runner_tick_audit(&config.audit_log_path, report) {
+        eprintln!("syncsteward: failed to append runner tick audit: {error}");
+    }
+
+    let state = RunnerTickState {
+        dry_run: report.dry_run,
+        finished_at_unix_ms,
+        due: report.due,
+        outcome: report.outcome,
+        next_due_at_unix_ms: report.next_due_at_unix_ms,
+        summary: report.summary.clone(),
+    };
+
+    if let Err(error) = save_runner_tick(&config.state_path, state) {
+        eprintln!("syncsteward: failed to record runner tick state: {error}");
     }
 }
 
@@ -2024,6 +2236,86 @@ fn append_target_run_audit(path: &Path, report: &TargetRunReport) -> Result<()> 
         summary: &report.summary,
         effective_mode: report.evaluation.effective_mode,
         blocker_ids,
+        step_ids,
+    };
+
+    let mut file = OpenOptions::new().create(true).append(true).open(path)?;
+    writeln!(file, "{}", serde_json::to_string(&record)?)?;
+    Ok(())
+}
+
+fn append_cycle_run_audit(path: &Path, report: &RunCycleReport) -> Result<()> {
+    #[derive(Serialize)]
+    struct CycleRunAuditRecord<'a> {
+        timestamp_unix_ms: u128,
+        kind: &'static str,
+        dry_run: bool,
+        outcome: ActionOutcome,
+        summary: &'a str,
+        approved_target_count: usize,
+        target_run_count: usize,
+        skipped_target_count: usize,
+        alert_count: usize,
+    }
+
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+
+    let record = CycleRunAuditRecord {
+        timestamp_unix_ms: now_unix_ms(),
+        kind: "cycle_run",
+        dry_run: report.dry_run,
+        outcome: report.outcome,
+        summary: &report.summary,
+        approved_target_count: report.approved_target_count,
+        target_run_count: report.target_runs.len(),
+        skipped_target_count: report.skipped_targets.len(),
+        alert_count: report.alerts.len(),
+    };
+
+    let mut file = OpenOptions::new().create(true).append(true).open(path)?;
+    writeln!(file, "{}", serde_json::to_string(&record)?)?;
+    Ok(())
+}
+
+fn append_runner_tick_audit(path: &Path, report: &RunnerTickReport) -> Result<()> {
+    #[derive(Serialize)]
+    struct RunnerTickAuditRecord<'a> {
+        timestamp_unix_ms: u128,
+        kind: &'static str,
+        dry_run: bool,
+        due: bool,
+        outcome: ActionOutcome,
+        summary: &'a str,
+        cycle_interval_minutes: u64,
+        preflight_ready: bool,
+        cycle_ran: bool,
+        alert_count: usize,
+        step_ids: Vec<&'a str>,
+    }
+
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+
+    let step_ids = report
+        .steps
+        .iter()
+        .map(|step| step.id.as_str())
+        .collect::<Vec<_>>();
+
+    let record = RunnerTickAuditRecord {
+        timestamp_unix_ms: now_unix_ms(),
+        kind: "runner_tick",
+        dry_run: report.dry_run,
+        due: report.due,
+        outcome: report.outcome,
+        summary: &report.summary,
+        cycle_interval_minutes: report.cycle_interval_minutes,
+        preflight_ready: report.preflight_ready,
+        cycle_ran: report.cycle.is_some(),
+        alert_count: report.alerts.len(),
         step_ids,
     };
 
@@ -2541,6 +2833,67 @@ fn summarize_cycle_report(
     }
 }
 
+fn summarize_runner_tick(
+    due: bool,
+    dry_run: bool,
+    outcome: ActionOutcome,
+    alerts: &[AlertRecord],
+) -> String {
+    if due {
+        let mode = if dry_run { "dry run tick" } else { "tick" };
+        match outcome {
+            ActionOutcome::Success => format!(
+                "{mode} executed approved cycle successfully ({} active alerts)",
+                alerts.len()
+            ),
+            ActionOutcome::NoOp => format!(
+                "{mode} executed approved cycle with no changes ({} active alerts)",
+                alerts.len()
+            ),
+            ActionOutcome::Blocked => format!(
+                "{mode} executed approved cycle but it was blocked ({} active alerts)",
+                alerts.len()
+            ),
+            ActionOutcome::Failed => format!(
+                "{mode} executed approved cycle but it failed ({} active alerts)",
+                alerts.len()
+            ),
+        }
+    } else {
+        format!(
+            "runner tick skipped cycle because it is not due ({} active alerts)",
+            alerts.len()
+        )
+    }
+}
+
+fn runner_due_status(
+    last_live_cycle_finished_at_unix_ms: Option<u128>,
+    interval_ms: u128,
+    now_unix_ms: u128,
+) -> (bool, Option<u128>) {
+    let next_due_at_unix_ms =
+        last_live_cycle_finished_at_unix_ms.map(|finished| finished.saturating_add(interval_ms));
+    let due = next_due_at_unix_ms.is_none_or(|next_due| now_unix_ms >= next_due);
+    (due, next_due_at_unix_ms)
+}
+
+fn describe_action_outcome(outcome: ActionOutcome) -> &'static str {
+    match outcome {
+        ActionOutcome::Success => "success",
+        ActionOutcome::NoOp => "no_op",
+        ActionOutcome::Blocked => "blocked",
+        ActionOutcome::Failed => "failed",
+    }
+}
+
+fn now_unix_ms() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+}
+
 fn failed_check_ids(report: &PreflightReport) -> String {
     let failed = report
         .checks
@@ -2721,8 +3074,8 @@ impl ActionTarget {
 mod tests {
     use super::{
         ActionOutcome, ActionStepStatus, add_managed_target, analyze_log_contents,
-        ensure_target_ids, evaluate_preflight, relocate_managed_target, summarize_outcome,
-        target_state_key,
+        ensure_target_ids, evaluate_preflight, relocate_managed_target, runner_due_status,
+        summarize_outcome, target_state_key,
     };
     use crate::config::{AppConfig, ManagedTarget, PolicyConfig, PolicyMode, load_config};
     use crate::model::{
@@ -3021,5 +3374,22 @@ path1 and path2 are out of sync, run --resync to recover\n\
         assert_eq!(loaded.config.managed_targets[0].local_path, relocated_path);
 
         let _ = fs::remove_dir_all(temp_root);
+    }
+
+    #[test]
+    fn runner_due_status_detects_when_cycle_is_due() {
+        let (due_without_history, next_due_without_history) = runner_due_status(None, 60_000, 123);
+        assert!(due_without_history);
+        assert_eq!(next_due_without_history, None);
+
+        let (due_too_soon, next_due_too_soon) =
+            runner_due_status(Some(1_000), 60_000, 30_000);
+        assert!(!due_too_soon);
+        assert_eq!(next_due_too_soon, Some(61_000));
+
+        let (due_after_interval, next_due_after_interval) =
+            runner_due_status(Some(1_000), 60_000, 61_000);
+        assert!(due_after_interval);
+        assert_eq!(next_due_after_interval, Some(61_000));
     }
 }

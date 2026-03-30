@@ -89,6 +89,23 @@ pub struct CycleSkippedTarget {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct RunnerTickReport {
+    pub config_source: String,
+    pub dry_run: bool,
+    pub outcome: ActionOutcome,
+    pub summary: String,
+    pub due: bool,
+    pub cycle_interval_minutes: u64,
+    pub last_live_cycle_finished_at_unix_ms: Option<u128>,
+    pub next_due_at_unix_ms: Option<u128>,
+    pub preflight_ready: bool,
+    pub cycle: Option<RunCycleReport>,
+    pub alerts: Vec<AlertRecord>,
+    pub notification: Option<NotifyAlertsReport>,
+    pub steps: Vec<ActionStep>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct AlertReport {
     pub config_source: String,
     pub generated_at_unix_ms: u128,

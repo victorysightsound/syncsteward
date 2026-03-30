@@ -31,6 +31,7 @@ SyncSteward does not restart sync automatically. The current build exposes:
 - target-scoped readiness and blocker reports before any selective re-enablement
 - single-target execution for approved `backup_only` targets, with dry-run support, legacy lock protection, and per-target audit/state records
 - approved-target cycle execution from config, so future daemon and UI layers can drive one guarded orchestration entry point
+- daemon-ready `runner-tick` scheduling that only executes the approved cycle when it is due
 - alert evaluation for stale or missing target runs, plus local notification support
 
 ## Interfaces
@@ -86,7 +87,11 @@ SyncSteward can now mutate that managed-target config directly:
 SyncSteward now has a config-backed cycle command for the approved healthy subset.
 
 - `runner.approved_targets` defines the exact targets the guarded cycle is allowed to execute
+- `runner.cycle_interval_minutes` defines the minimum cadence for scheduled execution
 - `run-cycle` reuses the same single-target guarded execution path instead of inventing a second sync engine
+- `run-cycle` now holds the legacy sync lock for the full cycle, so overlapping cycles and manual target runs cannot interleave
+- dry-run validation still writes audit history, but it does not overwrite the live target-run state that drives alerts
+- `runner-tick` is the daemon-ready entry point: it checks whether the approved cycle is due, runs it only when needed, and otherwise no-ops with the current alert snapshot
 - this is the first daemon-ready entry point for future scheduling, menu bar UI actions, and MCP orchestration
 - broad legacy folders can stay on `hold` while the approved subset keeps running safely
 
@@ -103,6 +108,7 @@ cargo run -p syncsteward-cli -- run-target .memloft --dry-run
 cargo run -p syncsteward-cli -- alerts
 cargo run -p syncsteward-cli -- notify-alerts --dry-run
 cargo run -p syncsteward-cli -- run-cycle --dry-run
+cargo run -p syncsteward-cli -- runner-tick --dry-run
 cargo run -p syncsteward-cli -- acknowledge-latest-log
 cargo run -p syncsteward-cli -- scaffold-config
 cargo run -p syncsteward-cli -- ensure-target-ids

@@ -72,8 +72,12 @@ pub struct AlertConfig {
 pub struct RunnerConfig {
     #[serde(default)]
     pub approved_targets: Vec<String>,
+    #[serde(default = "default_cycle_interval_minutes")]
+    pub cycle_interval_minutes: u64,
     #[serde(default = "default_notify_after_cycle")]
     pub notify_after_cycle: bool,
+    #[serde(default = "default_notify_after_tick")]
+    pub notify_after_tick: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -162,7 +166,9 @@ impl Default for RunnerConfig {
     fn default() -> Self {
         Self {
             approved_targets: Vec::new(),
+            cycle_interval_minutes: default_cycle_interval_minutes(),
             notify_after_cycle: default_notify_after_cycle(),
+            notify_after_tick: default_notify_after_tick(),
         }
     }
 }
@@ -254,6 +260,14 @@ fn default_enable_macos_notifications() -> bool {
 }
 
 fn default_notify_after_cycle() -> bool {
+    true
+}
+
+fn default_cycle_interval_minutes() -> u64 {
+    60
+}
+
+fn default_notify_after_tick() -> bool {
     true
 }
 
@@ -504,6 +518,9 @@ fn normalize_config(mut config: AppConfig) -> Result<AppConfig> {
         if !approved_targets.insert(selector.clone()) {
             bail!("runner.approved_targets must be unique: {selector}");
         }
+    }
+    if config.runner.cycle_interval_minutes == 0 {
+        bail!("runner.cycle_interval_minutes must be greater than zero");
     }
     if config.scan.max_examples == 0 {
         bail!("scan.max_examples must be greater than zero");

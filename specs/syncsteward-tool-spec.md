@@ -203,7 +203,8 @@ Rules:
 - supports explicit managed targets so curated subfolders can run while broader legacy folders remain on hold
 - merges target-specific exclusion rules into the temporary filter set for the active run
 - uses target-specific snapshot rules when a runtime target should upload SQLite backups instead of the live database files
-- records last target outcome in SyncSteward state
+- records last live target outcome in SyncSteward state
+- does not let dry-run validation overwrite the live target state used by alerts
 - appends a target-run audit record
 
 Supports:
@@ -233,10 +234,45 @@ Rules:
 
 - reads the approved target list from config instead of taking an ad hoc target list on the command line
 - reuses the same guarded single-target execution path as `run-target`
+- acquires the legacy sync lock once for the full cycle so overlapping cycles and manual target runs cannot interleave
 - only runs targets that still resolve cleanly and pass target readiness
 - records skipped selectors when config references a missing or obsolete target
+- records cycle outcome in SyncSteward state and audit history
 - may send post-cycle alert notifications when enabled in config
 - is the intended orchestration entry point for future daemon and UI layers
+
+Supports:
+
+- `--dry-run`
+- human output
+- JSON output
+
+### `syncsteward runner-tick`
+
+Run one daemon-ready scheduled tick for the approved target set.
+
+Outputs:
+
+- config source
+- dry-run flag
+- overall tick outcome
+- due flag
+- cycle interval in minutes
+- last live cycle completion timestamp
+- next due timestamp, when available
+- preflight readiness
+- optional nested cycle report when a cycle was due
+- current alert set after the tick
+- optional notification result
+- structured tick steps
+
+Rules:
+
+- reads cadence and approved-target settings from `runner.*` config
+- runs `run-cycle` only when the approved set is due
+- otherwise returns a safe no-op report with the current alert snapshot
+- may send post-tick alert notifications when enabled in config
+- is the intended entry point for future launchd, daemon, and menu bar scheduling
 
 Supports:
 
@@ -409,6 +445,10 @@ Send the same guarded local alert notification exposed by the CLI, including dry
 ### `run_cycle`
 
 Run the same approved-target guarded cycle exposed by the CLI, including dry-run support.
+
+### `runner_tick`
+
+Run the same daemon-ready scheduled tick exposed by the CLI, including dry-run support.
 
 ### `acknowledge_latest_log`
 

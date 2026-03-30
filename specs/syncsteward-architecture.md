@@ -73,7 +73,7 @@ Configuration now carries both operator paths and safety policy:
 - target-specific exclusion rules for protected bundles and subtrees
 - target-specific snapshot rules for runtime SQLite-backed targets
 - alert thresholds and notification toggles
-- runner settings for the approved target set and post-cycle notification behavior
+- runner settings for the approved target set, cycle cadence, and post-cycle/post-tick notification behavior
 
 ### Status
 
@@ -204,9 +204,12 @@ Monitoring should build on the same state model rather than inventing a separate
 The next daemon-ready layer should also stay inside the same guarded model:
 
 - approved targets should be declared explicitly in config rather than inferred at runtime
-- one guarded cycle command should evaluate preflight, run only approved executable targets, and then evaluate alerts
+- one guarded cycle command should evaluate preflight, hold the legacy sync lock for the full cycle, run only approved executable targets, and then evaluate alerts
+- one scheduled runner-tick command should decide whether the approved cycle is due, execute it only when needed, and otherwise return a safe no-op health result
 - future scheduling, menu bar actions, and MCP orchestration should call that cycle command instead of reimplementing sync sequencing
+- future scheduling, menu bar actions, and daemon loops should call the scheduled runner-tick command rather than polling ad hoc target lists
 - cycle execution should record per-target outcomes and preserve skipped-selector details when config refers to a target that no longer resolves cleanly
+- dry-run validation should remain observable in audit history without overwriting the live target-run state that drives alerts
 
 ## Planned Waves
 

@@ -16,12 +16,12 @@ pub use model::{
     ConfigScaffoldReport, ControlAction, ControlReport, CycleSkippedTarget, EnsureTargetIdsReport,
     LaunchAgentStatus, LegacySyncMode, LogAcknowledgeReport, LogSummary, ManagedTargetIdAssignment,
     ManagedTargetIdAssignmentReason, NotifyAlertsReport, PolicySummary, PreflightCheck,
-    PreflightReport, RelocateManagedTargetReport, RemoteStatus, RunCycleReport, ServiceState,
-    StatusReport, SyncTargetInventoryReport, SyncTargetRecord, TargetBlocker, TargetCheckReport,
-    TargetCheckSetReport, TargetEvaluation, TargetRunReport,
+    PreflightReport, RelocateManagedTargetReport, RemoteStatus, RunCycleReport, RunnerTickReport,
+    ServiceState, StatusReport, SyncTargetInventoryReport, SyncTargetRecord, TargetBlocker,
+    TargetCheckReport, TargetCheckSetReport, TargetEvaluation, TargetRunReport,
 };
 pub use probe::{
     acknowledge_latest_log, add_managed_target, alerts, check_target, check_targets,
     ensure_target_ids, notify_alerts, pause, preflight, relocate_managed_target, resume, run_cycle,
-    run_target, scaffold_config, status,
+    run_target, runner_tick, scaffold_config, status,
 };

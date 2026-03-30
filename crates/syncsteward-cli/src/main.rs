@@ -4,11 +4,12 @@ use syncsteward_core::{
     ActionOutcome, ActionStepStatus, ActionTarget, AddManagedTargetReport, AlertReport,
     AlertSeverity, CheckStatus, ConfigScaffoldReport, ControlReport, EnsureTargetIdsReport,
     LogAcknowledgeReport, NotifyAlertsReport, PolicyMode, PreflightReport,
-    RelocateManagedTargetReport, RunCycleReport, StatusReport, SyncTargetInventoryReport,
-    TargetCheckReport, TargetCheckSetReport, TargetRunReport, acknowledge_latest_log,
+    RelocateManagedTargetReport, RunCycleReport, RunnerTickReport, StatusReport,
+    SyncTargetInventoryReport, TargetCheckReport, TargetCheckSetReport, TargetRunReport,
+    acknowledge_latest_log,
     add_managed_target, alerts, check_target, check_targets, ensure_target_ids, notify_alerts,
-    pause, preflight, relocate_managed_target, resume, run_cycle, run_target, scaffold_config,
-    status, targets,
+    pause, preflight, relocate_managed_target, resume, run_cycle, run_target, runner_tick,
+    scaffold_config, status, targets,
 };
 
 #[derive(Debug, Parser)]
@@ -74,6 +75,13 @@ enum Command {
     },
     /// Run one guarded cycle for the approved target set in SyncSteward config.
     RunCycle {
+        #[arg(long)]
+        dry_run: bool,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Run one daemon-ready scheduled tick that only executes the approved cycle when due.
+    RunnerTick {
         #[arg(long)]
         dry_run: bool,
         #[arg(long)]
@@ -319,6 +327,20 @@ fn run() -> i32 {
                 }
             } else {
                 print_run_cycle(&report);
+            }
+            action_exit_code(report.outcome)
+        }
+        Command::RunnerTick { dry_run, json } => {
+            let report = match runner_tick(cli.config.as_deref(), dry_run) {
+                Ok(report) => report,
+                Err(error) => return fatal_error(&error.to_string()),
+            };
+            if json {
+                if print_json(&report).is_err() {
+                    return fatal_error("failed to serialize runner-tick report as JSON");
+                }
+            } else {
+                print_runner_tick(&report);
             }
             action_exit_code(report.outcome)
         }
@@ -741,6 +763,51 @@ fn print_run_cycle(report: &RunCycleReport) {
     if let Some(notification) = &report.notification {
         println!("Notification: {:?}", notification.outcome);
         println!("  {}", notification.summary);
+    }
+}
+
+fn print_runner_tick(report: &RunnerTickReport) {
+    println!("SyncSteward Runner Tick: {:?}", report.outcome);
+    println!("{}", report.summary);
+    println!("Config source: {}", report.config_source);
+    println!("Dry run: {}", if report.dry_run { "yes" } else { "no" });
+    println!("Due: {}", if report.due { "yes" } else { "no" });
+    println!("Cycle interval: {} minutes", report.cycle_interval_minutes);
+    if let Some(last_live) = report.last_live_cycle_finished_at_unix_ms {
+        println!("Last live cycle finished: {}", last_live);
+    } else {
+        println!("Last live cycle finished: none");
+    }
+    if let Some(next_due) = report.next_due_at_unix_ms {
+        println!("Next due at: {}", next_due);
+    }
+    println!(
+        "Preflight ready: {}",
+        if report.preflight_ready { "yes" } else { "no" }
+    );
+    if let Some(cycle) = &report.cycle {
+        println!("Cycle outcome: {:?}", cycle.outcome);
+        println!("  {}", cycle.summary);
+    } else {
+        println!("Cycle outcome: skipped");
+    }
+    println!("Active alerts: {}", report.alerts.len());
+    if let Some(notification) = &report.notification {
+        println!("Notification: {:?}", notification.outcome);
+        println!("  {}", notification.summary);
+    }
+    if report.steps.is_empty() {
+        println!("Steps: none");
+    } else {
+        println!("Steps:");
+        for step in &report.steps {
+            println!(
+                "  - [{}] {}",
+                describe_step_status(step.status),
+                step.summary
+            );
+            println!("    {}", step.detail);
+        }
     }
 }
 

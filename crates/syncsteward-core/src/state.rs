@@ -12,7 +12,19 @@ pub struct AppState {
     #[serde(default)]
     pub acknowledged_log: Option<AcknowledgedLogSummary>,
     #[serde(default)]
+    pub runner: RunnerState,
+    #[serde(default)]
     pub target_runs: BTreeMap<String, TargetRunState>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct RunnerState {
+    #[serde(default)]
+    pub last_live_cycle_finished_at_unix_ms: Option<u128>,
+    #[serde(default)]
+    pub last_cycle: Option<RunnerCycleState>,
+    #[serde(default)]
+    pub last_tick: Option<RunnerTickState>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -26,6 +38,27 @@ pub struct TargetRunState {
     pub dry_run: bool,
     pub finished_at_unix_ms: u128,
     pub last_success_at_unix_ms: Option<u128>,
+    pub summary: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RunnerCycleState {
+    pub dry_run: bool,
+    pub started_at_unix_ms: u128,
+    pub finished_at_unix_ms: u128,
+    pub outcome: ActionOutcome,
+    pub approved_target_count: usize,
+    pub active_alert_count: usize,
+    pub summary: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RunnerTickState {
+    pub dry_run: bool,
+    pub finished_at_unix_ms: u128,
+    pub due: bool,
+    pub outcome: ActionOutcome,
+    pub next_due_at_unix_ms: Option<u128>,
     pub summary: String,
 }
 
@@ -77,6 +110,33 @@ pub fn save_target_run(path: &Path, state_key: &str, run: TargetRunState) -> Res
         }
     }
     state.target_runs.insert(state_key.to_string(), run);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(path, serde_json::to_string_pretty(&state)?)?;
+    Ok(())
+}
+
+pub fn save_runner_cycle(
+    path: &Path,
+    cycle: RunnerCycleState,
+    live_finished_at_unix_ms: Option<u128>,
+) -> Result<()> {
+    let mut state = load_state(path)?;
+    state.runner.last_cycle = Some(cycle);
+    if live_finished_at_unix_ms.is_some() {
+        state.runner.last_live_cycle_finished_at_unix_ms = live_finished_at_unix_ms;
+    }
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(path, serde_json::to_string_pretty(&state)?)?;
+    Ok(())
+}
+
+pub fn save_runner_tick(path: &Path, tick: RunnerTickState) -> Result<()> {
+    let mut state = load_state(path)?;
+    state.runner.last_tick = Some(tick);
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
