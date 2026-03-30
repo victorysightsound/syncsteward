@@ -6,17 +6,17 @@ struct SyncStewardMacApp: App {
     @StateObject private var store = OverviewStore()
 
     var body: some Scene {
-        WindowGroup("SyncSteward", id: "control-center") {
-            SyncStewardControlCenterView(store: store)
-                .frame(minWidth: 520, minHeight: 640)
-        }
-        .defaultSize(width: 560, height: 680)
-
         MenuBarExtra("SyncSteward", systemImage: store.statusSymbolName) {
             SyncStewardMenuBarView(store: store)
                 .frame(width: 420)
         }
         .menuBarExtraStyle(.window)
+
+        Window("SyncSteward", id: "control-center") {
+            SyncStewardControlCenterView(store: store)
+                .frame(minWidth: 520, minHeight: 640)
+        }
+        .defaultSize(width: 560, height: 680)
 
         Settings {
             SyncStewardSettingsView(store: store)
@@ -301,7 +301,7 @@ struct SyncStewardMenuBarView: View {
 
             HStack(spacing: 10) {
                 if includeOpenWindowAction {
-                    Button("Open Window") {
+                    Button("Open Dashboard") {
                         openWindow(id: "control-center")
                     }
                 }
