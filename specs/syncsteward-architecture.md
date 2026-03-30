@@ -145,6 +145,12 @@ Each managed target should also be able to carry a durable ID. That identity is 
 - normal file and folder moves inside the target root, which should sync naturally
 - a move of the target root itself, which should trigger an explicit relocate/adopt workflow instead of being treated as unrelated deletes and uploads
 
+That identity layer should not remain passive metadata. SyncSteward should expose explicit lifecycle actions so operators can:
+
+- add a new managed target without editing config by hand
+- relocate an existing managed target by ID, name, or current path
+- preserve the same target identity and run history when the managed target root moves
+
 It should also expose a target-scoped readiness view so an operator can see:
 
 - the effective mode after configured overrides are applied
@@ -184,6 +190,7 @@ The next execution layer is also explicit and fail-safe:
 - execution must respect the legacy sync lock so manual runs cannot overlap the old script
 - every target run should append audit history and record last outcome in state
 - future relocate/adopt commands should use managed target IDs instead of path-only matching when reconnecting moved target roots
+- add/relocate target mutations should update config through the same guarded control plane instead of forcing manual config edits
 
 Monitoring should build on the same state model rather than inventing a separate tracker:
 
@@ -196,6 +203,6 @@ Monitoring should build on the same state model rather than inventing a separate
 
 1. Health and preflight inspection
 2. Coordinated pause/resume and structured audit logging
-3. Per-folder sync policy, managed subtargets, durable target IDs, config scaffolding, file-class overrides, and quarantine management
+3. Per-folder sync policy, managed subtargets, durable target IDs, managed-target lifecycle commands, config scaffolding, file-class overrides, and quarantine management
 4. Notifications and escalation
 5. Menu bar UI and operator workflow polish

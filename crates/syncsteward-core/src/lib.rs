@@ -7,20 +7,21 @@ mod state;
 pub use config::{
     AppConfig, ConfigSource, FileClass, FileClassPolicy, FolderPolicy, LoadedConfig, ManagedTarget,
     PolicyConfig, PolicyMode, RemoteConfig, ScanConfig, TargetExclusion, TargetSnapshot,
-    default_config_path, load_config,
+    default_config_path, load_config, normalize_app_config,
 };
 pub use inventory::targets;
 pub use model::{
-    AcknowledgedLogSummary, ActionOutcome, ActionStep, ActionStepStatus, ActionTarget, AlertRecord,
-    AlertReport, AlertSeverity, ArtifactReport, CheckStatus, ConfigScaffoldReport, ControlAction,
-    ControlReport, EnsureTargetIdsReport, LaunchAgentStatus, LegacySyncMode,
-    LogAcknowledgeReport, LogSummary, ManagedTargetIdAssignment,
+    AcknowledgedLogSummary, ActionOutcome, ActionStep, ActionStepStatus, ActionTarget,
+    AddManagedTargetReport, AlertRecord, AlertReport, AlertSeverity, ArtifactReport, CheckStatus,
+    ConfigScaffoldReport, ControlAction, ControlReport, EnsureTargetIdsReport, LaunchAgentStatus,
+    LegacySyncMode, LogAcknowledgeReport, LogSummary, ManagedTargetIdAssignment,
     ManagedTargetIdAssignmentReason, NotifyAlertsReport, PolicySummary, PreflightCheck,
-    PreflightReport, RemoteStatus, ServiceState, StatusReport, SyncTargetInventoryReport,
-    SyncTargetRecord, TargetBlocker, TargetCheckReport, TargetCheckSetReport, TargetEvaluation,
-    TargetRunReport,
+    PreflightReport, RelocateManagedTargetReport, RemoteStatus, ServiceState, StatusReport,
+    SyncTargetInventoryReport, SyncTargetRecord, TargetBlocker, TargetCheckReport,
+    TargetCheckSetReport, TargetEvaluation, TargetRunReport,
 };
 pub use probe::{
-    acknowledge_latest_log, alerts, check_target, check_targets, ensure_target_ids,
-    notify_alerts, pause, preflight, resume, run_target, scaffold_config, status,
+    acknowledge_latest_log, add_managed_target, alerts, check_target, check_targets,
+    ensure_target_ids, notify_alerts, pause, preflight, relocate_managed_target, resume,
+    run_target, scaffold_config, status,
 };

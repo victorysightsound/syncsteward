@@ -1,12 +1,13 @@
 use clap::{Parser, Subcommand, ValueEnum};
 use std::path::PathBuf;
 use syncsteward_core::{
-    ActionOutcome, ActionStepStatus, ActionTarget, AlertReport, AlertSeverity, CheckStatus,
-    ConfigScaffoldReport, ControlReport, EnsureTargetIdsReport, LogAcknowledgeReport,
-    NotifyAlertsReport, PolicyMode, PreflightReport, StatusReport, SyncTargetInventoryReport,
-    TargetCheckReport, TargetCheckSetReport, TargetRunReport, acknowledge_latest_log, alerts,
-    check_target, check_targets, ensure_target_ids, notify_alerts, pause, preflight, resume,
-    run_target, scaffold_config, status, targets,
+    ActionOutcome, ActionStepStatus, ActionTarget, AddManagedTargetReport, AlertReport,
+    AlertSeverity, CheckStatus, ConfigScaffoldReport, ControlReport, EnsureTargetIdsReport,
+    LogAcknowledgeReport, NotifyAlertsReport, PolicyMode, PreflightReport,
+    RelocateManagedTargetReport, StatusReport, SyncTargetInventoryReport, TargetCheckReport,
+    TargetCheckSetReport, TargetRunReport, acknowledge_latest_log, add_managed_target, alerts,
+    check_target, check_targets, ensure_target_ids, notify_alerts, pause, preflight,
+    relocate_managed_target, resume, run_target, scaffold_config, status, targets,
 };
 
 #[derive(Debug, Parser)]
@@ -87,6 +88,31 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Add a new managed target without hand-editing the SyncSteward config.
+    AddManagedTarget {
+        #[arg(long)]
+        name: String,
+        #[arg(long)]
+        local_path: PathBuf,
+        #[arg(long)]
+        remote_path: String,
+        #[arg(long, value_enum, default_value_t = ManagedModeArg::BackupOnly)]
+        mode: ManagedModeArg,
+        #[arg(long)]
+        rationale: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Relocate an existing managed target by selector while preserving its durable ID.
+    RelocateManagedTarget {
+        target: String,
+        #[arg(long)]
+        local_path: PathBuf,
+        #[arg(long)]
+        remote_path: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
     /// Pause the local launch agent, remote OneDrive service, or both.
     Pause {
         #[arg(long, value_enum, default_value_t = TargetArg::All)]
@@ -120,6 +146,25 @@ enum TargetArg {
     Local,
     Remote,
     All,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum ManagedModeArg {
+    TwoWayCurated,
+    BackupOnly,
+    Excluded,
+    Hold,
+}
+
+impl From<ManagedModeArg> for PolicyMode {
+    fn from(value: ManagedModeArg) -> Self {
+        match value {
+            ManagedModeArg::TwoWayCurated => PolicyMode::TwoWayCurated,
+            ManagedModeArg::BackupOnly => PolicyMode::BackupOnly,
+            ManagedModeArg::Excluded => PolicyMode::Excluded,
+            ManagedModeArg::Hold => PolicyMode::Hold,
+        }
+    }
 }
 
 fn main() -> Result<(), String> {
@@ -294,6 +339,60 @@ fn run() -> i32 {
                 }
             } else {
                 print_ensure_target_ids(&report);
+            }
+            action_exit_code(report.outcome)
+        }
+        Command::AddManagedTarget {
+            name,
+            local_path,
+            remote_path,
+            mode,
+            rationale,
+            json,
+        } => {
+            let report = match add_managed_target(
+                cli.config.as_deref(),
+                &name,
+                &local_path,
+                &remote_path,
+                mode.into(),
+                rationale.as_deref(),
+            ) {
+                Ok(report) => report,
+                Err(error) => return fatal_error(&error.to_string()),
+            };
+            if json {
+                if print_json(&report).is_err() {
+                    return fatal_error("failed to serialize add-managed-target report as JSON");
+                }
+            } else {
+                print_add_managed_target(&report);
+            }
+            action_exit_code(report.outcome)
+        }
+        Command::RelocateManagedTarget {
+            target,
+            local_path,
+            remote_path,
+            json,
+        } => {
+            let report = match relocate_managed_target(
+                cli.config.as_deref(),
+                &target,
+                &local_path,
+                remote_path.as_deref(),
+            ) {
+                Ok(report) => report,
+                Err(error) => return fatal_error(&error.to_string()),
+            };
+            if json {
+                if print_json(&report).is_err() {
+                    return fatal_error(
+                        "failed to serialize relocate-managed-target report as JSON",
+                    );
+                }
+            } else {
+                print_relocate_managed_target(&report);
             }
             action_exit_code(report.outcome)
         }
@@ -673,6 +772,39 @@ fn print_ensure_target_ids(report: &EnsureTargetIdsReport) {
             assignment.target_name, assignment.target_id, assignment.reason
         );
     }
+}
+
+fn print_add_managed_target(report: &AddManagedTargetReport) {
+    println!("SyncSteward Add Managed Target: {:?}", report.outcome);
+    println!("{}", report.summary);
+    println!("Config path: {}", report.path.display());
+    print_target_record(&report.target);
+}
+
+fn print_relocate_managed_target(report: &RelocateManagedTargetReport) {
+    println!("SyncSteward Relocate Managed Target: {:?}", report.outcome);
+    println!("{}", report.summary);
+    println!("Config path: {}", report.path.display());
+    println!("Selector: {}", report.selector);
+    println!(
+        "Previous local path: {}",
+        report.previous_local_path.display()
+    );
+    println!("Previous remote path: {}", report.previous_remote_path);
+    print_target_record(&report.target);
+}
+
+fn print_target_record(target: &syncsteward_core::SyncTargetRecord) {
+    println!("Target: {}", target.name);
+    if let Some(target_id) = &target.target_id {
+        println!("  id: {}", target_id);
+    }
+    println!("  local: {}", target.local_path.display());
+    println!("  remote: {}", target.remote_path);
+    println!(
+        "  mode: {}",
+        describe_policy_mode(target.configured_mode.unwrap_or(target.recommended_mode))
+    );
 }
 
 fn print_path_samples(title: &str, paths: &[PathBuf]) {

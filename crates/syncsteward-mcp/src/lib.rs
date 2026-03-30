@@ -9,14 +9,15 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use std::path::PathBuf;
 use syncsteward_core::{
-    ActionTarget, AlertReport, ConfigScaffoldReport, ControlReport, LogAcknowledgeReport,
-    EnsureTargetIdsReport, NotifyAlertsReport, PreflightReport, StatusReport,
-    SyncTargetInventoryReport, TargetCheckReport, TargetCheckSetReport, TargetRunReport,
-    acknowledge_latest_log as core_acknowledge_latest_log, alerts as core_alerts,
+    ActionTarget, AddManagedTargetReport, AlertReport, ConfigScaffoldReport, ControlReport,
+    EnsureTargetIdsReport, LogAcknowledgeReport, NotifyAlertsReport, PolicyMode, PreflightReport,
+    RelocateManagedTargetReport, StatusReport, SyncTargetInventoryReport, TargetCheckReport,
+    TargetCheckSetReport, TargetRunReport, acknowledge_latest_log as core_acknowledge_latest_log,
+    add_managed_target as core_add_managed_target, alerts as core_alerts,
     check_target as core_check_target, check_targets as core_check_targets,
     ensure_target_ids as core_ensure_target_ids, notify_alerts as core_notify_alerts, pause,
-    preflight, resume, run_target as core_run_target, scaffold_config as core_scaffold_config,
-    status, targets,
+    preflight, relocate_managed_target as core_relocate_managed_target, resume,
+    run_target as core_run_target, scaffold_config as core_scaffold_config, status, targets,
 };
 
 type McpResult<T> = Result<Json<T>, String>;
@@ -34,6 +35,23 @@ struct RunTargetRequest {
 }
 
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
+struct AddManagedTargetRequest {
+    name: String,
+    local_path: PathBuf,
+    remote_path: String,
+    #[serde(default = "default_policy_mode_backup_only")]
+    mode: PolicyMode,
+    rationale: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+struct RelocateManagedTargetRequest {
+    target: String,
+    local_path: PathBuf,
+    remote_path: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
 struct DryRunRequest {
     #[serde(default)]
     dry_run: bool,
@@ -43,6 +61,10 @@ struct DryRunRequest {
 pub struct SyncStewardMcpServer {
     config_path: Option<PathBuf>,
     tool_router: ToolRouter<Self>,
+}
+
+fn default_policy_mode_backup_only() -> PolicyMode {
+    PolicyMode::BackupOnly
 }
 
 impl SyncStewardMcpServer {
@@ -223,8 +245,53 @@ impl SyncStewardMcpServer {
     )]
     async fn ensure_target_ids(&self) -> McpResult<EnsureTargetIdsReport> {
         let config_path = self.config_path.clone();
+        let report =
+            tokio::task::spawn_blocking(move || core_ensure_target_ids(config_path.as_deref()))
+                .await
+                .map_err(|error| error.to_string())?
+                .map_err(|error| error.to_string())?;
+        Ok(Json(report))
+    }
+
+    #[tool(
+        description = "Add a new managed target to the SyncSteward config without hand-editing the file. This assigns a durable target ID immediately."
+    )]
+    async fn add_managed_target(
+        &self,
+        Parameters(request): Parameters<AddManagedTargetRequest>,
+    ) -> McpResult<AddManagedTargetReport> {
+        let config_path = self.config_path.clone();
         let report = tokio::task::spawn_blocking(move || {
-            core_ensure_target_ids(config_path.as_deref())
+            core_add_managed_target(
+                config_path.as_deref(),
+                &request.name,
+                &request.local_path,
+                &request.remote_path,
+                request.mode,
+                request.rationale.as_deref(),
+            )
+        })
+        .await
+        .map_err(|error| error.to_string())?
+        .map_err(|error| error.to_string())?;
+        Ok(Json(report))
+    }
+
+    #[tool(
+        description = "Relocate an existing managed target by ID, name, or local path while preserving its durable target ID and run history."
+    )]
+    async fn relocate_managed_target(
+        &self,
+        Parameters(request): Parameters<RelocateManagedTargetRequest>,
+    ) -> McpResult<RelocateManagedTargetReport> {
+        let config_path = self.config_path.clone();
+        let report = tokio::task::spawn_blocking(move || {
+            core_relocate_managed_target(
+                config_path.as_deref(),
+                &request.target,
+                &request.local_path,
+                request.remote_path.as_deref(),
+            )
         })
         .await
         .map_err(|error| error.to_string())?

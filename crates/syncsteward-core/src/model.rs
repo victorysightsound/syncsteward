@@ -49,6 +49,25 @@ pub struct TargetRunReport {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct AddManagedTargetReport {
+    pub outcome: ActionOutcome,
+    pub summary: String,
+    pub path: PathBuf,
+    pub target: SyncTargetRecord,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct RelocateManagedTargetReport {
+    pub outcome: ActionOutcome,
+    pub summary: String,
+    pub path: PathBuf,
+    pub selector: String,
+    pub previous_local_path: PathBuf,
+    pub previous_remote_path: String,
+    pub target: SyncTargetRecord,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct AlertReport {
     pub config_source: String,
     pub generated_at_unix_ms: u128,

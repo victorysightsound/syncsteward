@@ -343,6 +343,10 @@ pub fn default_config_path() -> PathBuf {
     expand_path(Path::new("~/.config/syncsteward/config.toml"))
 }
 
+pub fn normalize_app_config(config: AppConfig) -> Result<AppConfig> {
+    normalize_config(config)
+}
+
 fn read_config(path: &Path) -> Result<AppConfig> {
     let raw =
         fs::read_to_string(path).with_context(|| format!("read config at {}", path.display()))?;
@@ -431,6 +435,30 @@ fn normalize_config(mut config: AppConfig) -> Result<AppConfig> {
             }
         }
     }
+    let mut managed_target_names = BTreeSet::new();
+    for target in &config.managed_targets {
+        if !managed_target_names.insert(target.name.clone()) {
+            bail!("managed_targets.name must be unique: {}", target.name);
+        }
+    }
+    let mut managed_local_paths = BTreeSet::new();
+    for target in &config.managed_targets {
+        if !managed_local_paths.insert(target.local_path.clone()) {
+            bail!(
+                "managed_targets.local_path must be unique: {}",
+                target.local_path.display()
+            );
+        }
+    }
+    let mut managed_remote_paths = BTreeSet::new();
+    for target in &config.managed_targets {
+        if !managed_remote_paths.insert(target.remote_path.clone()) {
+            bail!(
+                "managed_targets.remote_path must be unique: {}",
+                target.remote_path
+            );
+        }
+    }
     if config.remote.preferred_hosts.is_empty() {
         bail!("remote.preferred_hosts must contain at least one host");
     }
@@ -469,7 +497,9 @@ fn normalize_optional_value(value: Option<&str>) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{FileClass, ManagedTarget, PolicyConfig, PolicyMode, expand_path, normalize_optional_value};
+    use super::{
+        FileClass, ManagedTarget, PolicyConfig, PolicyMode, expand_path, normalize_optional_value,
+    };
     use std::path::{Path, PathBuf};
 
     #[test]
@@ -564,7 +594,10 @@ mod tests {
 
     #[test]
     fn normalize_optional_value_trims_and_drops_blank_values() {
-        assert_eq!(normalize_optional_value(Some(" abc ")), Some("abc".to_string()));
+        assert_eq!(
+            normalize_optional_value(Some(" abc ")),
+            Some("abc".to_string())
+        );
         assert_eq!(normalize_optional_value(Some("   ")), None);
         assert_eq!(normalize_optional_value(None), None);
     }

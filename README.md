@@ -25,6 +25,7 @@ SyncSteward does not restart sync automatically. The current build exposes:
 - target inventory from the current `cloud-sync.sh` with safer recommended policies
 - explicitly managed subtargets that can be backed up safely while their broad parent folder stays on hold
 - durable managed-target IDs as the first foundation for future relocate/adopt workflows
+- managed-target lifecycle commands for adding curated paths and relocating existing targets without hand-editing config
 - explicit acknowledgement of a historical incident log after cleanup
 - config scaffolding so recommended folder policies become a real SyncSteward config file
 - target-scoped readiness and blocker reports before any selective re-enablement
@@ -74,6 +75,11 @@ Managed targets participate in:
 
 Managed targets can also carry stable IDs now. That is the first foundation for a future relocate/adopt workflow, where SyncSteward can recognize the same managed target after its root path moves instead of treating it as a brand-new target with unrelated deletes.
 
+SyncSteward can now mutate that managed-target config directly:
+
+- `add-managed-target` registers a new curated path and assigns its durable ID immediately
+- `relocate-managed-target` updates a managed target by ID, name, or current path while preserving the same durable ID and run history
+
 ## Commands
 
 ```bash
@@ -89,6 +95,8 @@ cargo run -p syncsteward-cli -- notify-alerts --dry-run
 cargo run -p syncsteward-cli -- acknowledge-latest-log
 cargo run -p syncsteward-cli -- scaffold-config
 cargo run -p syncsteward-cli -- ensure-target-ids
+cargo run -p syncsteward-cli -- add-managed-target --name Notes/Archive --local-path ~/Notes/Archive --remote-path OneDrive/Notes/Archive
+cargo run -p syncsteward-cli -- relocate-managed-target 019d3c2e-4881-7d53-9e1e-37e74729e874 --local-path ~/Notes/Personal
 cargo run -p syncsteward-cli -- pause --target all
 cargo run -p syncsteward-cli -- resume --target all
 cargo run -p syncsteward-cli -- status --json

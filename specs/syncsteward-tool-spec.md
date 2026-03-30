@@ -129,6 +129,60 @@ Supports:
 - human output
 - JSON output
 
+### `syncsteward add-managed-target`
+
+Register a new managed target in the SyncSteward config file.
+
+Outputs:
+
+- config path
+- durable target ID
+- target name
+- local path
+- remote path
+- configured mode
+
+Rules:
+
+- requires an existing config file
+- requires the local path to exist and be a directory
+- assigns a durable managed-target ID immediately
+- refuses duplicate target name, local path, or remote path
+- makes the new target available everywhere a managed target already participates
+
+Supports:
+
+- mode selection
+- optional rationale
+- human output
+- JSON output
+
+### `syncsteward relocate-managed-target`
+
+Relocate an existing managed target by stable ID, target name, or current local path.
+
+Outputs:
+
+- config path
+- selector used
+- previous local path
+- previous remote path
+- current target record after relocation
+
+Rules:
+
+- requires an existing config file
+- matches managed targets by ID first, then by name or local path
+- preserves the durable target ID and run history
+- requires the new local path to exist and be a directory
+- optionally updates the remote path at the same time
+- returns `no_op` when the requested location already matches the current target
+
+Supports:
+
+- human output
+- JSON output
+
 ### `syncsteward run-target`
 
 Run one configured target with full preflight and policy gating.
@@ -332,6 +386,14 @@ Write the same config scaffold exposed by the CLI, with a separate force-overwri
 
 Assign the same stable managed-target IDs exposed by the CLI.
 
+### `add_managed_target`
+
+Register the same managed-target lifecycle mutation exposed by the CLI.
+
+### `relocate_managed_target`
+
+Run the same managed-target relocation workflow exposed by the CLI while preserving durable target identity.
+
 ### `pause_all`, `pause_local`, `pause_remote`
 
 Run the same coordinated pause actions exposed by the CLI.
@@ -346,5 +408,5 @@ Deferred for later waves:
 
 - folder policy editing
 - conflict quarantine moves
-- managed target relocate/adopt
+- managed target adopt/detect-move automation beyond explicit relocate
 - UI

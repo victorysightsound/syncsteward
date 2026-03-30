@@ -1,12 +1,16 @@
-use crate::config::{AppConfig, FolderPolicy, default_config_path, expand_path, load_config};
+use crate::config::{
+    AppConfig, FolderPolicy, ManagedTarget, PolicyMode, default_config_path, expand_path,
+    load_config, normalize_app_config,
+};
 use crate::inventory::build_target_inventory;
 use crate::model::{
-    ActionOutcome, ActionStep, ActionStepStatus, ActionTarget, AlertRecord, AlertReport,
-    AlertSeverity, ArtifactReport, CheckStatus, ConfigScaffoldReport, ControlAction,
+    ActionOutcome, ActionStep, ActionStepStatus, ActionTarget, AddManagedTargetReport, AlertRecord,
+    AlertReport, AlertSeverity, ArtifactReport, CheckStatus, ConfigScaffoldReport, ControlAction,
     ControlReport, EnsureTargetIdsReport, LaunchAgentStatus, LogAcknowledgeReport, LogSummary,
     ManagedTargetIdAssignment, ManagedTargetIdAssignmentReason, NotifyAlertsReport, PolicySummary,
-    PreflightCheck, PreflightReport, RemoteStatus, ServiceState, StatusReport, TargetBlocker,
-    TargetCheckReport, TargetCheckSetReport, TargetEvaluation, TargetRunReport,
+    PreflightCheck, PreflightReport, RelocateManagedTargetReport, RemoteStatus, ServiceState,
+    StatusReport, TargetBlocker, TargetCheckReport, TargetCheckSetReport, TargetEvaluation,
+    TargetRunReport,
 };
 use crate::state::{
     TargetRunState, load_state, matches_acknowledged_log, save_acknowledged_log, save_target_run,
@@ -160,12 +164,7 @@ pub fn check_target(config_path: Option<&Path>, selector: &str) -> Result<Target
     let loaded = load_config(config_path)?;
     let preflight = evaluate_preflight(collect_status(&loaded.config, loaded.source.description()));
     let inventory = build_target_inventory(&loaded.config, loaded.source.description())?;
-    let selector_path = expand_path(Path::new(selector));
-    let target = inventory
-        .targets
-        .into_iter()
-        .find(|target| target.name == selector || target.local_path == selector_path)
-        .ok_or_else(|| anyhow!("no sync target matched selector {selector}"))?;
+    let target = resolve_inventory_target(inventory.targets, selector)?;
 
     Ok(TargetCheckReport {
         config_source: loaded.source.description(),
@@ -183,12 +182,7 @@ pub fn run_target(
     let loaded = load_config(config_path)?;
     let preflight = evaluate_preflight(collect_status(&loaded.config, loaded.source.description()));
     let inventory = build_target_inventory(&loaded.config, loaded.source.description())?;
-    let selector_path = expand_path(Path::new(selector));
-    let target = inventory
-        .targets
-        .into_iter()
-        .find(|target| target.name == selector || target.local_path == selector_path)
-        .ok_or_else(|| anyhow!("no sync target matched selector {selector}"))?;
+    let target = resolve_inventory_target(inventory.targets, selector)?;
     let evaluation = evaluate_target(&preflight, target);
     let mut steps = Vec::new();
 
@@ -470,7 +464,9 @@ pub fn scaffold_config(config_path: Option<&Path>, force: bool) -> Result<Config
 }
 
 pub fn ensure_target_ids(config_path: Option<&Path>) -> Result<EnsureTargetIdsReport> {
-    let output_path = config_path.map(expand_path).unwrap_or_else(default_config_path);
+    let output_path = config_path
+        .map(expand_path)
+        .unwrap_or_else(default_config_path);
     if !output_path.exists() {
         return Err(anyhow!(
             "config does not exist at {} (create or scaffold it first)",
@@ -552,6 +548,287 @@ pub fn ensure_target_ids(config_path: Option<&Path>) -> Result<EnsureTargetIdsRe
         preserved_count,
         assignments,
     })
+}
+
+pub fn add_managed_target(
+    config_path: Option<&Path>,
+    name: &str,
+    local_path: &Path,
+    remote_path: &str,
+    mode: PolicyMode,
+    rationale: Option<&str>,
+) -> Result<AddManagedTargetReport> {
+    let (output_path, mut config) = load_editable_config(config_path)?;
+    let target_name = name.trim();
+    if target_name.is_empty() {
+        return Err(anyhow!("managed target name must not be empty"));
+    }
+
+    let local_path = expand_path(local_path);
+    if !local_path.exists() {
+        return Err(anyhow!(
+            "managed target local path does not exist: {}",
+            local_path.display()
+        ));
+    }
+    if !local_path.is_dir() {
+        return Err(anyhow!(
+            "managed target local path is not a directory: {}",
+            local_path.display()
+        ));
+    }
+
+    let remote_path = remote_path.trim();
+    if remote_path.is_empty() {
+        return Err(anyhow!("managed target remote path must not be empty"));
+    }
+
+    let rationale = rationale
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned);
+
+    ensure_managed_target_slot_is_available(&config, target_name, &local_path, remote_path, None)?;
+
+    let target_id = Uuid::now_v7().to_string();
+    config.managed_targets.push(ManagedTarget {
+        target_id: Some(target_id.clone()),
+        name: target_name.to_string(),
+        local_path: local_path.clone(),
+        remote_path: remote_path.to_string(),
+        mode,
+        rationale,
+    });
+
+    let normalized = write_config(&output_path, config)?;
+    let target = resolve_managed_inventory_target(&normalized, &target_id, &output_path)?;
+
+    Ok(AddManagedTargetReport {
+        outcome: ActionOutcome::Success,
+        summary: format!("added managed target {}", target.name),
+        path: output_path,
+        target,
+    })
+}
+
+pub fn relocate_managed_target(
+    config_path: Option<&Path>,
+    selector: &str,
+    local_path: &Path,
+    remote_path: Option<&str>,
+) -> Result<RelocateManagedTargetReport> {
+    let (output_path, mut config) = load_editable_config(config_path)?;
+    let selector_path = expand_path(Path::new(selector));
+    let target_index = config
+        .managed_targets
+        .iter()
+        .position(|target| managed_target_matches_selector(target, selector, &selector_path))
+        .ok_or_else(|| anyhow!("no managed target matched selector {selector}"))?;
+
+    let previous_local_path = config.managed_targets[target_index].local_path.clone();
+    let previous_remote_path = config.managed_targets[target_index].remote_path.clone();
+    let target_name = config.managed_targets[target_index].name.clone();
+    let target_id = config.managed_targets[target_index]
+        .target_id
+        .clone()
+        .unwrap_or_else(|| Uuid::now_v7().to_string());
+
+    let local_path = expand_path(local_path);
+    if !local_path.exists() {
+        return Err(anyhow!(
+            "managed target local path does not exist: {}",
+            local_path.display()
+        ));
+    }
+    if !local_path.is_dir() {
+        return Err(anyhow!(
+            "managed target local path is not a directory: {}",
+            local_path.display()
+        ));
+    }
+
+    let remote_path = match remote_path {
+        Some(path) => {
+            let trimmed = path.trim();
+            if trimmed.is_empty() {
+                return Err(anyhow!("managed target remote path must not be empty"));
+            }
+            trimmed.to_string()
+        }
+        None => previous_remote_path.clone(),
+    };
+
+    if previous_local_path == local_path && previous_remote_path == remote_path {
+        let normalized = normalize_app_config(config)?;
+        let target = resolve_managed_inventory_target(&normalized, &target_id, &output_path)?;
+        return Ok(RelocateManagedTargetReport {
+            outcome: ActionOutcome::NoOp,
+            summary: format!(
+                "managed target {} is already at the requested location",
+                target.name
+            ),
+            path: output_path,
+            selector: selector.to_string(),
+            previous_local_path,
+            previous_remote_path,
+            target,
+        });
+    }
+
+    ensure_managed_target_slot_is_available(
+        &config,
+        &target_name,
+        &local_path,
+        &remote_path,
+        Some(&target_id),
+    )?;
+
+    config.managed_targets[target_index].target_id = Some(target_id.clone());
+    config.managed_targets[target_index].local_path = local_path;
+    config.managed_targets[target_index].remote_path = remote_path;
+
+    let normalized = write_config(&output_path, config)?;
+    let target = resolve_managed_inventory_target(&normalized, &target_id, &output_path)?;
+
+    Ok(RelocateManagedTargetReport {
+        outcome: ActionOutcome::Success,
+        summary: format!("relocated managed target {}", target.name),
+        path: output_path,
+        selector: selector.to_string(),
+        previous_local_path,
+        previous_remote_path,
+        target,
+    })
+}
+
+fn load_editable_config(config_path: Option<&Path>) -> Result<(PathBuf, AppConfig)> {
+    let output_path = config_path
+        .map(expand_path)
+        .unwrap_or_else(default_config_path);
+    if !output_path.exists() {
+        return Err(anyhow!(
+            "config does not exist at {} (create or scaffold it first)",
+            output_path.display()
+        ));
+    }
+
+    let raw = fs::read_to_string(&output_path)
+        .map_err(|error| anyhow!("read config at {}: {error}", output_path.display()))?;
+    let config: AppConfig = toml::from_str(&raw)
+        .map_err(|error| anyhow!("parse config at {}: {error}", output_path.display()))?;
+    Ok((output_path, config))
+}
+
+fn write_config(path: &Path, config: AppConfig) -> Result<AppConfig> {
+    let normalized = normalize_app_config(config)?;
+    let encoded = toml::to_string_pretty(&normalized)?;
+    fs::write(path, encoded)?;
+    Ok(normalized)
+}
+
+fn resolve_inventory_target(
+    targets: Vec<crate::model::SyncTargetRecord>,
+    selector: &str,
+) -> Result<crate::model::SyncTargetRecord> {
+    let selector_path = expand_path(Path::new(selector));
+    targets
+        .into_iter()
+        .find(|target| target_matches_selector(target, selector, &selector_path))
+        .ok_or_else(|| anyhow!("no sync target matched selector {selector}"))
+}
+
+fn resolve_managed_inventory_target(
+    config: &AppConfig,
+    target_id: &str,
+    config_path: &Path,
+) -> Result<crate::model::SyncTargetRecord> {
+    let inventory =
+        build_target_inventory(config, format!("explicit config {}", config_path.display()))?;
+    inventory
+        .targets
+        .into_iter()
+        .find(|target| target.target_id.as_deref() == Some(target_id))
+        .ok_or_else(|| anyhow!("managed target with id {target_id} was not found after update"))
+}
+
+fn ensure_managed_target_slot_is_available(
+    config: &AppConfig,
+    target_name: &str,
+    local_path: &Path,
+    remote_path: &str,
+    current_target_id: Option<&str>,
+) -> Result<()> {
+    let current_target_id = current_target_id.unwrap_or_default();
+    for target in &config.managed_targets {
+        let same_target = target.target_id.as_deref().unwrap_or_default() == current_target_id
+            && !current_target_id.is_empty();
+        if same_target {
+            continue;
+        }
+        if target.name == target_name {
+            return Err(anyhow!(
+                "managed target name already exists: {}",
+                target_name
+            ));
+        }
+        if target.local_path == local_path {
+            return Err(anyhow!(
+                "managed target local path already exists: {}",
+                local_path.display()
+            ));
+        }
+        if target.remote_path == remote_path {
+            return Err(anyhow!(
+                "managed target remote path already exists: {}",
+                remote_path
+            ));
+        }
+    }
+
+    let normalized = normalize_app_config(config.clone())?;
+    let inventory = build_target_inventory(&normalized, "managed target edit".to_string())?;
+    for target in inventory.targets {
+        let same_target = target.target_id.as_deref().unwrap_or_default() == current_target_id;
+        if same_target && !current_target_id.is_empty() {
+            continue;
+        }
+        if target.name == target_name {
+            return Err(anyhow!("sync target name already exists: {}", target_name));
+        }
+        if target.local_path == local_path {
+            return Err(anyhow!(
+                "sync target local path already exists: {}",
+                local_path.display()
+            ));
+        }
+        if target.remote_path == remote_path {
+            return Err(anyhow!(
+                "sync target remote path already exists: {}",
+                remote_path
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn target_matches_selector(
+    target: &crate::model::SyncTargetRecord,
+    selector: &str,
+    selector_path: &Path,
+) -> bool {
+    target.target_id.as_deref() == Some(selector)
+        || target.name == selector
+        || target.local_path == selector_path
+}
+
+fn managed_target_matches_selector(
+    target: &ManagedTarget,
+    selector: &str,
+    selector_path: &Path,
+) -> bool {
+    target.target_id.as_deref() == Some(selector)
+        || target.name == selector
+        || target.local_path == selector_path
 }
 
 fn collect_status(config: &AppConfig, config_source: String) -> StatusReport {
@@ -2294,8 +2571,9 @@ impl ActionTarget {
 #[cfg(test)]
 mod tests {
     use super::{
-        ActionOutcome, ActionStepStatus, analyze_log_contents, ensure_target_ids,
-        evaluate_preflight, summarize_outcome, target_state_key,
+        ActionOutcome, ActionStepStatus, add_managed_target, analyze_log_contents,
+        ensure_target_ids, evaluate_preflight, relocate_managed_target, summarize_outcome,
+        target_state_key,
     };
     use crate::config::{AppConfig, ManagedTarget, PolicyConfig, PolicyMode, load_config};
     use crate::model::{
@@ -2451,7 +2729,8 @@ path1 and path2 are out of sync, run --resync to recover\n\
 
     #[test]
     fn ensure_target_ids_assigns_missing_ids() {
-        let temp_path = std::env::temp_dir().join(format!("syncsteward-test-{}.toml", Uuid::now_v7()));
+        let temp_path =
+            std::env::temp_dir().join(format!("syncsteward-test-{}.toml", Uuid::now_v7()));
         let mut config = AppConfig::default();
         config.managed_targets = vec![
             ManagedTarget {
@@ -2471,7 +2750,11 @@ path1 and path2 are out of sync, run --resync to recover\n\
                 rationale: None,
             },
         ];
-        fs::write(&temp_path, toml::to_string_pretty(&config).expect("serialize config")).expect("write config");
+        fs::write(
+            &temp_path,
+            toml::to_string_pretty(&config).expect("serialize config"),
+        )
+        .expect("write config");
 
         let report = ensure_target_ids(Some(temp_path.as_path())).expect("ensure target ids");
         assert_eq!(report.outcome, ActionOutcome::Success);
@@ -2488,5 +2771,106 @@ path1 and path2 are out of sync, run --resync to recover\n\
         assert_ne!(ids[0], ids[1]);
 
         let _ = fs::remove_file(temp_path);
+    }
+
+    #[test]
+    fn add_managed_target_assigns_id_and_persists() {
+        let temp_root = std::env::temp_dir().join(format!("syncsteward-test-{}", Uuid::now_v7()));
+        let target_path = temp_root.join("Notes/Personal");
+        let temp_path = temp_root.join("config.toml");
+        let script_path = temp_root.join("cloud-sync.sh");
+
+        fs::create_dir_all(&target_path).expect("create target path");
+        fs::write(
+            &script_path,
+            "BISYNC_FOLDERS=(\n    \"Notes\"\n)\n\nBACKUP_FOLDERS=(\n    \".memloft:.memloft\"\n)\n",
+        )
+        .expect("write sync script");
+
+        let mut config = AppConfig::default();
+        config.sync_script_path = script_path;
+        fs::write(
+            &temp_path,
+            toml::to_string_pretty(&config).expect("serialize config"),
+        )
+        .expect("write config");
+
+        let report = add_managed_target(
+            Some(temp_path.as_path()),
+            "Notes/Personal",
+            target_path.as_path(),
+            "OneDrive/Notes/Personal",
+            PolicyMode::BackupOnly,
+            Some("test"),
+        )
+        .expect("add managed target");
+
+        assert_eq!(report.outcome, ActionOutcome::Success);
+        assert_eq!(report.target.name, "Notes/Personal");
+        assert!(report.target.target_id.is_some());
+
+        let loaded = load_config(Some(temp_path.as_path())).expect("load config");
+        assert_eq!(loaded.config.managed_targets.len(), 1);
+        assert_eq!(
+            loaded.config.managed_targets[0].target_id,
+            report.target.target_id
+        );
+
+        let _ = fs::remove_dir_all(temp_root);
+    }
+
+    #[test]
+    fn relocate_managed_target_preserves_id_and_updates_path() {
+        let temp_root = std::env::temp_dir().join(format!("syncsteward-test-{}", Uuid::now_v7()));
+        let original_path = temp_root.join("Notes/Personal");
+        let relocated_path = temp_root.join("Notes/RenamedPersonal");
+        let temp_path = temp_root.join("config.toml");
+        let script_path = temp_root.join("cloud-sync.sh");
+
+        fs::create_dir_all(&original_path).expect("create original path");
+        fs::create_dir_all(&relocated_path).expect("create relocated path");
+        fs::write(
+            &script_path,
+            "BISYNC_FOLDERS=(\n    \"Notes\"\n)\n\nBACKUP_FOLDERS=(\n    \".memloft:.memloft\"\n)\n",
+        )
+        .expect("write sync script");
+
+        let mut config = AppConfig::default();
+        config.sync_script_path = script_path;
+        config.managed_targets = vec![ManagedTarget {
+            target_id: Some("target-123".to_string()),
+            name: "Notes/Personal".to_string(),
+            local_path: original_path,
+            remote_path: "OneDrive/Notes/Personal".to_string(),
+            mode: PolicyMode::BackupOnly,
+            rationale: Some("test".to_string()),
+        }];
+        fs::write(
+            &temp_path,
+            toml::to_string_pretty(&config).expect("serialize config"),
+        )
+        .expect("write config");
+
+        let report = relocate_managed_target(
+            Some(temp_path.as_path()),
+            "target-123",
+            relocated_path.as_path(),
+            Some("OneDrive/Notes/RenamedPersonal"),
+        )
+        .expect("relocate managed target");
+
+        assert_eq!(report.outcome, ActionOutcome::Success);
+        assert_eq!(report.target.target_id.as_deref(), Some("target-123"));
+        assert_eq!(report.target.local_path, relocated_path);
+        assert_eq!(report.target.remote_path, "OneDrive/Notes/RenamedPersonal");
+
+        let loaded = load_config(Some(temp_path.as_path())).expect("load config");
+        assert_eq!(
+            loaded.config.managed_targets[0].target_id.as_deref(),
+            Some("target-123")
+        );
+        assert_eq!(loaded.config.managed_targets[0].local_path, relocated_path);
+
+        let _ = fs::remove_dir_all(temp_root);
     }
 }
