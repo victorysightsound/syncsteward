@@ -3,14 +3,13 @@ use std::path::PathBuf;
 use syncsteward_core::{
     ActionOutcome, ActionStepStatus, ActionTarget, AddManagedTargetReport, AlertReport,
     AlertSeverity, CheckStatus, ConfigScaffoldReport, ControlReport, EnsureTargetIdsReport,
-    LogAcknowledgeReport, NotifyAlertsReport, PolicyMode, PreflightReport,
-    RelocateManagedTargetReport, RunCycleReport, RunnerAgentControlReport,
-    RunnerAgentStatusReport, RunnerTickReport, StatusReport, SyncTargetInventoryReport,
-    TargetCheckReport, TargetCheckSetReport, TargetRunReport, acknowledge_latest_log,
-    add_managed_target, alerts, check_target, check_targets, ensure_target_ids,
-    install_runner_agent, notify_alerts, pause, preflight, relocate_managed_target, resume,
-    run_cycle, run_target, runner_agent_status, runner_tick, scaffold_config, status, targets,
-    uninstall_runner_agent,
+    LogAcknowledgeReport, NotifyAlertsReport, OverviewReport, PolicyMode, PreflightReport,
+    RelocateManagedTargetReport, RunCycleReport, RunnerAgentControlReport, RunnerAgentStatusReport,
+    RunnerTickReport, StatusReport, SyncTargetInventoryReport, TargetCheckReport,
+    TargetCheckSetReport, TargetRunReport, acknowledge_latest_log, add_managed_target, alerts,
+    check_target, check_targets, ensure_target_ids, install_runner_agent, notify_alerts, overview,
+    pause, preflight, relocate_managed_target, resume, run_cycle, run_target, runner_agent_status,
+    runner_tick, scaffold_config, status, targets, uninstall_runner_agent,
 };
 
 #[derive(Debug, Parser)]
@@ -28,6 +27,11 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    /// Read a composed operator summary across runner, alerts, and approved targets.
+    Overview {
+        #[arg(long)]
+        json: bool,
+    },
     /// Read the current sync health snapshot.
     Status {
         #[arg(long)]
@@ -210,6 +214,20 @@ fn main() -> Result<(), String> {
 fn run() -> i32 {
     let cli = Cli::parse();
     match cli.command {
+        Command::Overview { json } => {
+            let report = match overview(cli.config.as_deref()) {
+                Ok(report) => report,
+                Err(error) => return fatal_error(&error.to_string()),
+            };
+            if json {
+                if print_json(&report).is_err() {
+                    return fatal_error("failed to serialize overview as JSON");
+                }
+            } else {
+                print_overview(&report);
+            }
+            0
+        }
         Command::Status { json } => {
             let report = match status(cli.config.as_deref()) {
                 Ok(report) => report,
@@ -547,6 +565,152 @@ impl From<TargetArg> for ActionTarget {
             TargetArg::Local => ActionTarget::Local,
             TargetArg::Remote => ActionTarget::Remote,
             TargetArg::All => ActionTarget::All,
+        }
+    }
+}
+
+fn print_overview(report: &OverviewReport) {
+    println!("SyncSteward Overview");
+    println!("Config source: {}", report.config_source);
+    println!(
+        "Preflight: {} ({} failing, {} warnings)",
+        if report.preflight_ready {
+            "ready"
+        } else {
+            "blocked"
+        },
+        report.failing_check_count,
+        report.warning_check_count
+    );
+    println!("Active alerts: {}", report.active_alert_count);
+    println!(
+        "Runner: {}",
+        if report.runner.agent.installed {
+            if report.runner.agent.loaded {
+                "installed and loaded"
+            } else {
+                "installed but not loaded"
+            }
+        } else {
+            "not installed"
+        }
+    );
+    println!(
+        "  cycle every {} minutes, tick every {} minutes",
+        report.runner.cycle_interval_minutes, report.runner.tick_interval_minutes
+    );
+    println!(
+        "  due now: {}",
+        if report.runner.due { "yes" } else { "no" }
+    );
+    if let Some(last_live) = report.runner.last_live_cycle_finished_at_unix_ms {
+        println!("  last live cycle: {}", last_live);
+    } else {
+        println!("  last live cycle: none");
+    }
+    if let Some(next_due) = report.runner.next_due_at_unix_ms {
+        println!("  next due at: {}", next_due);
+    }
+    if let Some(last_cycle) = &report.runner.last_cycle {
+        println!(
+            "  last cycle: {} at {}",
+            describe_action_outcome(last_cycle.outcome),
+            last_cycle.finished_at_unix_ms
+        );
+        println!("    {}", last_cycle.summary);
+    }
+    if let Some(last_tick) = &report.runner.last_tick {
+        println!(
+            "  last tick: {} at {}",
+            describe_action_outcome(last_tick.outcome),
+            last_tick.finished_at_unix_ms
+        );
+        println!("    {}", last_tick.summary);
+    }
+    println!(
+        "Targets: {} total, {} managed, {} ready, {} blocked",
+        report.targets.total_target_count,
+        report.targets.managed_target_count,
+        report.targets.ready_target_count,
+        report.targets.blocked_target_count
+    );
+    println!(
+        "  approved: {} configured, {} resolved, {} ready, {} with live success",
+        report.targets.approved_target_count,
+        report.targets.resolved_approved_target_count,
+        report.targets.ready_approved_target_count,
+        report.targets.live_success_target_count
+    );
+
+    if report.approved_targets.is_empty() {
+        println!("Approved targets: none");
+    } else {
+        println!("Approved targets:");
+        for target in &report.approved_targets {
+            let state = if !target.resolved {
+                "UNRESOLVED"
+            } else if target
+                .evaluation
+                .as_ref()
+                .map(|evaluation| evaluation.ready)
+                .unwrap_or(false)
+            {
+                "READY"
+            } else {
+                "BLOCKED"
+            };
+            println!("- [{}] {}", state, target.selector);
+            println!("  {}", target.detail);
+            if let Some(evaluation) = &target.evaluation {
+                println!(
+                    "  target: {} ({})",
+                    evaluation.target.name,
+                    describe_policy_mode(evaluation.effective_mode)
+                );
+                if let Some(last_run) = &target.last_run {
+                    println!(
+                        "  last run: {} at {}",
+                        describe_action_outcome(last_run.outcome),
+                        last_run.finished_at_unix_ms
+                    );
+                    println!("    {}", last_run.summary);
+                }
+                if !evaluation.blockers.is_empty() {
+                    println!("  blockers:");
+                    for blocker in evaluation.blockers.iter().take(3) {
+                        println!("    - {}", blocker.summary);
+                    }
+                }
+            }
+        }
+    }
+
+    if report.recent_target_runs.is_empty() {
+        println!("Recent target runs: none");
+    } else {
+        println!("Recent target runs:");
+        for run in report.recent_target_runs.iter().take(5) {
+            println!(
+                "- {} [{}] {}",
+                run.target_name,
+                describe_action_outcome(run.outcome),
+                run.finished_at_unix_ms
+            );
+            println!("  {}", run.summary);
+        }
+    }
+
+    if report.alerts.is_empty() {
+        println!("Alerts: clear");
+    } else {
+        println!("Alerts:");
+        for alert in &report.alerts {
+            println!(
+                "- [{}] {}",
+                describe_alert_severity(alert.severity),
+                alert.summary
+            );
+            println!("  {}", alert.detail);
         }
     }
 }
@@ -1136,6 +1300,15 @@ fn describe_step_status(status: ActionStepStatus) -> &'static str {
         ActionStepStatus::Skipped => "SKIPPED",
         ActionStepStatus::Blocked => "BLOCKED",
         ActionStepStatus::Failed => "FAILED",
+    }
+}
+
+fn describe_action_outcome(outcome: ActionOutcome) -> &'static str {
+    match outcome {
+        ActionOutcome::Success => "SUCCESS",
+        ActionOutcome::NoOp => "NOOP",
+        ActionOutcome::Blocked => "BLOCKED",
+        ActionOutcome::Failed => "FAILED",
     }
 }
 

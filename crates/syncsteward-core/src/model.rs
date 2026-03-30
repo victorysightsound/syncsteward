@@ -16,6 +16,89 @@ pub struct StatusReport {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct OverviewReport {
+    pub config_source: String,
+    pub generated_at_unix_ms: u128,
+    pub preflight_ready: bool,
+    pub failing_check_count: usize,
+    pub warning_check_count: usize,
+    pub active_alert_count: usize,
+    pub status: StatusReport,
+    pub preflight_checks: Vec<PreflightCheck>,
+    pub runner: RunnerOverview,
+    pub targets: TargetHealthOverview,
+    pub approved_targets: Vec<ApprovedTargetOverview>,
+    pub recent_target_runs: Vec<RecentTargetRunSummary>,
+    pub alerts: Vec<AlertRecord>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct RunnerOverview {
+    pub agent: LaunchAgentStatus,
+    pub cycle_interval_minutes: u64,
+    pub tick_interval_minutes: u64,
+    pub due: bool,
+    pub last_live_cycle_finished_at_unix_ms: Option<u128>,
+    pub next_due_at_unix_ms: Option<u128>,
+    pub last_cycle: Option<RunnerCycleSummary>,
+    pub last_tick: Option<RunnerTickSummary>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct RunnerCycleSummary {
+    pub dry_run: bool,
+    pub started_at_unix_ms: u128,
+    pub finished_at_unix_ms: u128,
+    pub outcome: ActionOutcome,
+    pub approved_target_count: usize,
+    pub active_alert_count: usize,
+    pub summary: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct RunnerTickSummary {
+    pub dry_run: bool,
+    pub finished_at_unix_ms: u128,
+    pub due: bool,
+    pub outcome: ActionOutcome,
+    pub next_due_at_unix_ms: Option<u128>,
+    pub summary: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct TargetHealthOverview {
+    pub total_target_count: usize,
+    pub managed_target_count: usize,
+    pub approved_target_count: usize,
+    pub resolved_approved_target_count: usize,
+    pub ready_target_count: usize,
+    pub blocked_target_count: usize,
+    pub ready_approved_target_count: usize,
+    pub live_success_target_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ApprovedTargetOverview {
+    pub selector: String,
+    pub resolved: bool,
+    pub detail: String,
+    pub evaluation: Option<TargetEvaluation>,
+    pub last_run: Option<RecentTargetRunSummary>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct RecentTargetRunSummary {
+    pub target_name: String,
+    pub target_id: Option<String>,
+    pub local_path: PathBuf,
+    pub effective_mode: crate::config::PolicyMode,
+    pub outcome: ActionOutcome,
+    pub finished_at_unix_ms: u128,
+    pub last_success_at_unix_ms: Option<u128>,
+    pub summary: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct RunnerAgentStatusReport {
     pub config_source: String,
     pub status: LaunchAgentStatus,

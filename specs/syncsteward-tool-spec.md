@@ -71,6 +71,26 @@ Supports:
 - human output
 - JSON output
 
+### `syncsteward overview`
+
+Read one composed operator summary across preflight, runner state, approved targets, recent target runs, and alerts.
+
+Outputs:
+
+- config source
+- generated timestamp
+- preflight readiness plus failing/warning check counts
+- runner cadence, due state, and last cycle/tick summaries
+- target health counts across configured, managed, approved, ready, blocked, and live-success targets
+- approved target resolution/readiness with latest recorded run when available
+- recent target-run history sorted newest first
+- active alert list
+
+Supports:
+
+- human output
+- JSON output
+
 ### `syncsteward check-targets`
 
 Explain readiness and blockers for every configured sync target.
@@ -481,6 +501,10 @@ Supports:
 Run the MCP server over stdio.
 
 ## Initial MCP Surface
+
+### `overview`
+
+Read the same composed overview exposed by the CLI.
 
 ### `status`
 

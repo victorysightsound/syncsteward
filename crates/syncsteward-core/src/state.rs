@@ -160,7 +160,10 @@ pub fn save_runner_tick(path: &Path, tick: RunnerTickState) -> Result<()> {
     Ok(())
 }
 
-pub fn save_alert_notification_state(path: &Path, alert_state: AlertNotificationState) -> Result<()> {
+pub fn save_alert_notification_state(
+    path: &Path,
+    alert_state: AlertNotificationState,
+) -> Result<()> {
     let mut state = load_state(path)?;
     state.alert_notifications = alert_state;
     if let Some(parent) = path.parent() {

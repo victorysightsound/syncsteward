@@ -13,6 +13,7 @@ The current wave focuses on three things:
 
 SyncSteward does not restart sync automatically. The current build exposes:
 
+- one composed overview across preflight, runner state, approved targets, recent run history, and alerts
 - local launch agent status
 - dedicated SyncSteward runner launch agent status
 - remote OneDrive service status
@@ -42,6 +43,8 @@ SyncSteward does not restart sync automatically. The current build exposes:
 - MCP: AI-native sync inspection and future orchestration
 
 UI comes later, after the CLI and MCP surfaces are stable.
+
+The `overview` surface is the first stable dashboard-style contract for that future UI.
 
 ## Protected Bundles
 
@@ -103,6 +106,7 @@ SyncSteward now has a config-backed cycle command for the approved healthy subse
 ## Commands
 
 ```bash
+cargo run -p syncsteward-cli -- overview
 cargo run -p syncsteward-cli -- status
 cargo run -p syncsteward-cli -- preflight
 cargo run -p syncsteward-cli -- targets
@@ -124,6 +128,7 @@ cargo run -p syncsteward-cli -- add-managed-target --name Notes/Archive --local-
 cargo run -p syncsteward-cli -- relocate-managed-target 019d3c2e-4881-7d53-9e1e-37e74729e874 --local-path ~/Notes/Personal
 cargo run -p syncsteward-cli -- pause --target all
 cargo run -p syncsteward-cli -- resume --target all
+cargo run -p syncsteward-cli -- overview --json
 cargo run -p syncsteward-cli -- status --json
 cargo run -p syncsteward-cli -- mcp stdio
 ```

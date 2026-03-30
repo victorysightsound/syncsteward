@@ -203,6 +203,7 @@ Monitoring should build on the same state model rather than inventing a separate
 - stale-success thresholds should be configurable
 - local notifications should summarize active alerts without hiding the underlying details
 - scheduled notifications should suppress unchanged alert sets inside a repeat window and optionally send one recovery notification when the active set clears
+- one composed overview surface should summarize preflight, runner cadence, approved-target readiness, recent target history, and active alerts for CLI, MCP, and future UI consumers
 
 The next daemon-ready layer should also stay inside the same guarded model:
 

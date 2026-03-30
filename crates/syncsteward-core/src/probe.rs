@@ -5,18 +5,19 @@ use crate::config::{
 use crate::inventory::build_target_inventory;
 use crate::model::{
     ActionOutcome, ActionStep, ActionStepStatus, ActionTarget, AddManagedTargetReport, AlertRecord,
-    AlertReport, AlertSeverity, ArtifactReport, CheckStatus, ConfigScaffoldReport, ControlAction,
-    ControlReport, CycleSkippedTarget, EnsureTargetIdsReport, LaunchAgentStatus,
-    LogAcknowledgeReport, LogSummary, ManagedTargetIdAssignment, ManagedTargetIdAssignmentReason,
-    NotifyAlertsReport, PolicySummary, PreflightCheck, PreflightReport,
-    RelocateManagedTargetReport, RemoteStatus, RunCycleReport, RunnerAgentAction,
-    RunnerAgentControlReport, RunnerAgentStatusReport, RunnerTickReport, ServiceState,
-    StatusReport, TargetBlocker, TargetCheckReport, TargetCheckSetReport, TargetEvaluation,
-    TargetRunReport,
+    AlertReport, AlertSeverity, ApprovedTargetOverview, ArtifactReport, CheckStatus,
+    ConfigScaffoldReport, ControlAction, ControlReport, CycleSkippedTarget, EnsureTargetIdsReport,
+    LaunchAgentStatus, LogAcknowledgeReport, LogSummary, ManagedTargetIdAssignment,
+    ManagedTargetIdAssignmentReason, NotifyAlertsReport, OverviewReport, PolicySummary,
+    PreflightCheck, PreflightReport, RecentTargetRunSummary, RelocateManagedTargetReport,
+    RemoteStatus, RunCycleReport, RunnerAgentAction, RunnerAgentControlReport,
+    RunnerAgentStatusReport, RunnerCycleSummary, RunnerOverview, RunnerTickReport,
+    RunnerTickSummary, ServiceState, StatusReport, TargetBlocker, TargetCheckReport,
+    TargetCheckSetReport, TargetEvaluation, TargetHealthOverview, TargetRunReport,
 };
 use crate::state::{
-    AlertNotificationState, RunnerCycleState, RunnerTickState, TargetRunState, load_state,
-    matches_acknowledged_log, save_acknowledged_log, save_alert_notification_state,
+    AlertNotificationState, AppState, RunnerCycleState, RunnerTickState, TargetRunState,
+    load_state, matches_acknowledged_log, save_acknowledged_log, save_alert_notification_state,
     save_runner_cycle, save_runner_tick, save_target_run,
 };
 use anyhow::{Result, anyhow};
@@ -32,6 +33,58 @@ use walkdir::{DirEntry, WalkDir};
 pub fn status(config_path: Option<&Path>) -> Result<StatusReport> {
     let loaded = load_config(config_path)?;
     Ok(collect_status(&loaded.config, loaded.source.description()))
+}
+
+pub fn overview(config_path: Option<&Path>) -> Result<OverviewReport> {
+    let loaded = load_config(config_path)?;
+    let config_source = loaded.source.description();
+    let generated_at_unix_ms = now_unix_ms();
+    let status = collect_status(&loaded.config, config_source.clone());
+    let preflight = evaluate_preflight(status.clone());
+    let alert_report = evaluate_alerts(&loaded.config, config_source.clone())?;
+    let inventory = build_target_inventory(&loaded.config, config_source.clone())?;
+    let state = load_state(&loaded.config.state_path)?;
+    let evaluations = inventory
+        .targets
+        .into_iter()
+        .map(|target| evaluate_target(&preflight, target))
+        .collect::<Vec<_>>();
+    let approved_targets = build_approved_target_overview(
+        &loaded.config.runner.approved_targets,
+        &evaluations,
+        &state,
+    );
+    let targets = build_target_health_overview(&evaluations, &approved_targets, &state);
+    let runner = build_runner_overview(
+        &loaded.config,
+        &status.runner_agent,
+        &state,
+        generated_at_unix_ms,
+    );
+
+    Ok(OverviewReport {
+        config_source,
+        generated_at_unix_ms,
+        preflight_ready: preflight.ready,
+        failing_check_count: preflight
+            .checks
+            .iter()
+            .filter(|check| check.status == CheckStatus::Fail)
+            .count(),
+        warning_check_count: preflight
+            .checks
+            .iter()
+            .filter(|check| check.status == CheckStatus::Warn)
+            .count(),
+        active_alert_count: alert_report.alerts.len(),
+        status,
+        preflight_checks: preflight.checks,
+        runner,
+        targets,
+        approved_targets,
+        recent_target_runs: build_recent_target_run_summaries(&state),
+        alerts: alert_report.alerts,
+    })
 }
 
 pub fn preflight(config_path: Option<&Path>) -> Result<PreflightReport> {
@@ -65,7 +118,10 @@ pub fn notify_alerts(config_path: Option<&Path>, dry_run: bool) -> Result<Notify
             empty_summary: "no active alerts".to_string(),
             disabled_summary: "notifications are disabled".to_string(),
             dry_run_summary: format!("dry run would notify {} active alerts", report.alerts.len()),
-            success_summary: format!("sent notification for {} active alerts", report.alerts.len()),
+            success_summary: format!(
+                "sent notification for {} active alerts",
+                report.alerts.len()
+            ),
         },
     )?;
 
@@ -79,7 +135,8 @@ pub fn notify_alerts(config_path: Option<&Path>, dry_run: bool) -> Result<Notify
             last_notified_at_unix_ms: Some(now),
             repeat_count: 1,
         };
-        if let Err(error) = save_alert_notification_state(&loaded.config.state_path, updated_state) {
+        if let Err(error) = save_alert_notification_state(&loaded.config.state_path, updated_state)
+        {
             eprintln!("syncsteward: failed to record direct alert notification state: {error}");
         }
     }
@@ -369,7 +426,10 @@ fn scheduled_notify_alerts(
                         format!("dry run would notify {} active alerts", alerts.len())
                     },
                     success_summary: if repeat_count > 1 {
-                        format!("sent persistent notification for {} active alerts", alerts.len())
+                        format!(
+                            "sent persistent notification for {} active alerts",
+                            alerts.len()
+                        )
                     } else {
                         format!("sent notification for {} active alerts", alerts.len())
                     },
@@ -384,7 +444,8 @@ fn scheduled_notify_alerts(
                 } else {
                     existing.last_notified_signature
                 },
-                last_notified_at_unix_ms: if dispatch.outcome == ActionOutcome::Success && !dry_run {
+                last_notified_at_unix_ms: if dispatch.outcome == ActionOutcome::Success && !dry_run
+                {
                     Some(now)
                 } else {
                     existing.last_notified_at_unix_ms
@@ -731,46 +792,47 @@ fn run_cycle_inner(
 
     if skipped_targets.is_empty() {
         for selector in &approved_selectors {
-        let selector_path = expand_path(Path::new(selector));
-        let resolved = inventory
-            .targets
-            .iter()
-            .find(|target| target_matches_selector(target, selector, &selector_path))
-            .cloned();
-
-        let Some(target) = resolved else {
-            skipped_targets.push(CycleSkippedTarget {
-                selector: selector.clone(),
-                summary: format!("approved target selector {} did not resolve", selector),
-                detail: "update runner.approved_targets so every selector matches a current target"
-                    .to_string(),
-            });
-            continue;
-        };
-
-        let selector_for_run = target
-            .target_id
-            .clone()
-            .unwrap_or_else(|| target.name.clone());
-        let report = run_target_inner(config_path, &selector_for_run, dry_run, true)?;
-        if report.outcome == ActionOutcome::Blocked
-            && !report.evaluation.blockers.is_empty()
-            && report
-                .steps
+            let selector_path = expand_path(Path::new(selector));
+            let resolved = inventory
+                .targets
                 .iter()
-                .all(|step| step.status == ActionStepStatus::Blocked)
-        {
-            skipped_targets.push(CycleSkippedTarget {
-                selector: selector.clone(),
-                summary: format!(
-                    "{} was not ready during cycle execution",
-                    report.evaluation.target.name
-                ),
-                detail: format_target_blockers(&report.evaluation.blockers),
-            });
+                .find(|target| target_matches_selector(target, selector, &selector_path))
+                .cloned();
+
+            let Some(target) = resolved else {
+                skipped_targets.push(CycleSkippedTarget {
+                    selector: selector.clone(),
+                    summary: format!("approved target selector {} did not resolve", selector),
+                    detail:
+                        "update runner.approved_targets so every selector matches a current target"
+                            .to_string(),
+                });
+                continue;
+            };
+
+            let selector_for_run = target
+                .target_id
+                .clone()
+                .unwrap_or_else(|| target.name.clone());
+            let report = run_target_inner(config_path, &selector_for_run, dry_run, true)?;
+            if report.outcome == ActionOutcome::Blocked
+                && !report.evaluation.blockers.is_empty()
+                && report
+                    .steps
+                    .iter()
+                    .all(|step| step.status == ActionStepStatus::Blocked)
+            {
+                skipped_targets.push(CycleSkippedTarget {
+                    selector: selector.clone(),
+                    summary: format!(
+                        "{} was not ready during cycle execution",
+                        report.evaluation.target.name
+                    ),
+                    detail: format_target_blockers(&report.evaluation.blockers),
+                });
+            }
+            target_runs.push(report);
         }
-        target_runs.push(report);
-    }
     }
 
     drop(cycle_lock);
@@ -822,81 +884,86 @@ pub fn runner_tick(config_path: Option<&Path>, dry_run: bool) -> Result<RunnerTi
     );
 
     let mut steps = Vec::new();
-    let (outcome, summary, preflight_ready, cycle, alerts, notification, alert_state_update) = if due {
-        steps.push(applied_step(
-            "runner_due",
-            "approved target cycle is due".to_string(),
-            match last_live_cycle_finished_at_unix_ms {
-                Some(last_finished) => format!(
-                    "last live cycle finished at {last_finished}; cadence is {} minutes",
-                    loaded.config.runner.cycle_interval_minutes
-                ),
-                None => "no prior live cycle recorded".to_string(),
-            },
-        ));
-
-        let cycle = run_cycle_inner(config_path, dry_run, false)?;
-        steps.push(applied_step(
-            "runner_cycle",
-            format!(
-                "executed approved target cycle ({})",
-                describe_action_outcome(cycle.outcome)
-            ),
-            cycle.summary.clone(),
-        ));
-
-        let notification = scheduled_notify_alerts(&loaded.config, &state, &cycle.alerts, dry_run)?;
-        let notification_step = notification_step("runner_notify_alerts", &notification.report);
-        steps.push(notification_step);
-
-        (
-            cycle.outcome,
-            summarize_runner_tick(true, dry_run, cycle.outcome, &cycle.alerts),
-            cycle.preflight_ready,
-            Some(cycle.clone()),
-            cycle.alerts.clone(),
-            Some(notification.report),
-            notification.updated_state,
-        )
-    } else {
-        let next_due_at_unix_ms = next_due_at_unix_ms;
-        let alert_report = evaluate_alerts(&loaded.config, config_source.clone())?;
-        steps.push(skipped_step(
-            "runner_due",
-            "approved target cycle is not due yet".to_string(),
-            match next_due_at_unix_ms {
-                Some(next_due) => format!(
-                    "next due at {next_due}; cadence is {} minutes",
-                    loaded.config.runner.cycle_interval_minutes
-                ),
-                None => "next due time is not available".to_string(),
-            },
-        ));
-
-        let notification = if loaded.config.runner.notify_after_tick {
-            let notification =
-                scheduled_notify_alerts(&loaded.config, &state, &alert_report.alerts, dry_run)?;
-            steps.push(notification_step("runner_notify_alerts", &notification.report));
-            Some(notification)
-        } else {
-            steps.push(skipped_step(
-                "runner_notify_alerts",
-                "post-tick notifications are disabled".to_string(),
-                "runner.notify_after_tick is false".to_string(),
+    let (outcome, summary, preflight_ready, cycle, alerts, notification, alert_state_update) =
+        if due {
+            steps.push(applied_step(
+                "runner_due",
+                "approved target cycle is due".to_string(),
+                match last_live_cycle_finished_at_unix_ms {
+                    Some(last_finished) => format!(
+                        "last live cycle finished at {last_finished}; cadence is {} minutes",
+                        loaded.config.runner.cycle_interval_minutes
+                    ),
+                    None => "no prior live cycle recorded".to_string(),
+                },
             ));
-            None
-        };
 
-        (
-            ActionOutcome::NoOp,
-            summarize_runner_tick(false, dry_run, ActionOutcome::NoOp, &alert_report.alerts),
-            alert_report.preflight_ready,
-            None,
-            alert_report.alerts,
-            notification.as_ref().map(|item| item.report.clone()),
-            notification.and_then(|item| item.updated_state),
-        )
-    };
+            let cycle = run_cycle_inner(config_path, dry_run, false)?;
+            steps.push(applied_step(
+                "runner_cycle",
+                format!(
+                    "executed approved target cycle ({})",
+                    describe_action_outcome(cycle.outcome)
+                ),
+                cycle.summary.clone(),
+            ));
+
+            let notification =
+                scheduled_notify_alerts(&loaded.config, &state, &cycle.alerts, dry_run)?;
+            let notification_step = notification_step("runner_notify_alerts", &notification.report);
+            steps.push(notification_step);
+
+            (
+                cycle.outcome,
+                summarize_runner_tick(true, dry_run, cycle.outcome, &cycle.alerts),
+                cycle.preflight_ready,
+                Some(cycle.clone()),
+                cycle.alerts.clone(),
+                Some(notification.report),
+                notification.updated_state,
+            )
+        } else {
+            let next_due_at_unix_ms = next_due_at_unix_ms;
+            let alert_report = evaluate_alerts(&loaded.config, config_source.clone())?;
+            steps.push(skipped_step(
+                "runner_due",
+                "approved target cycle is not due yet".to_string(),
+                match next_due_at_unix_ms {
+                    Some(next_due) => format!(
+                        "next due at {next_due}; cadence is {} minutes",
+                        loaded.config.runner.cycle_interval_minutes
+                    ),
+                    None => "next due time is not available".to_string(),
+                },
+            ));
+
+            let notification = if loaded.config.runner.notify_after_tick {
+                let notification =
+                    scheduled_notify_alerts(&loaded.config, &state, &alert_report.alerts, dry_run)?;
+                steps.push(notification_step(
+                    "runner_notify_alerts",
+                    &notification.report,
+                ));
+                Some(notification)
+            } else {
+                steps.push(skipped_step(
+                    "runner_notify_alerts",
+                    "post-tick notifications are disabled".to_string(),
+                    "runner.notify_after_tick is false".to_string(),
+                ));
+                None
+            };
+
+            (
+                ActionOutcome::NoOp,
+                summarize_runner_tick(false, dry_run, ActionOutcome::NoOp, &alert_report.alerts),
+                alert_report.preflight_ready,
+                None,
+                alert_report.alerts,
+                notification.as_ref().map(|item| item.report.clone()),
+                notification.and_then(|item| item.updated_state),
+            )
+        };
 
     let report = RunnerTickReport {
         config_source,
@@ -915,7 +982,9 @@ pub fn runner_tick(config_path: Option<&Path>, dry_run: bool) -> Result<RunnerTi
     };
     if !dry_run {
         if let Some(alert_state) = alert_state_update {
-            if let Err(error) = save_alert_notification_state(&loaded.config.state_path, alert_state) {
+            if let Err(error) =
+                save_alert_notification_state(&loaded.config.state_path, alert_state)
+            {
                 eprintln!("syncsteward: failed to record alert notification state: {error}");
             }
         }
@@ -950,8 +1019,8 @@ pub fn install_runner_agent(
     }
 
     let loaded = load_config(Some(output_path.as_path()))?;
-    let executable_path = std::env::current_exe()
-        .map_err(|error| anyhow!("resolve current executable: {error}"))?;
+    let executable_path =
+        std::env::current_exe().map_err(|error| anyhow!("resolve current executable: {error}"))?;
     let agent = &loaded.config.runner.launch_agent;
     let mut steps = Vec::new();
 
@@ -1603,7 +1672,8 @@ fn collect_status(config: &AppConfig, config_source: String) -> StatusReport {
     let acknowledged_log = load_state(&config.state_path)
         .ok()
         .and_then(|state| state.acknowledged_log);
-    let launch_agent = probe_launch_agent(&config.launch_agent_label, Some(&config.launch_agent_path));
+    let launch_agent =
+        probe_launch_agent(&config.launch_agent_label, Some(&config.launch_agent_path));
     let runner_agent = probe_launch_agent(
         &config.runner.launch_agent.label,
         Some(&config.runner.launch_agent.plist_path),
@@ -1904,6 +1974,176 @@ fn evaluate_alerts(config: &AppConfig, config_source: String) -> Result<AlertRep
         repeat_notification_after_minutes: config.alerts.repeat_notification_after_minutes,
         alerts,
     })
+}
+
+fn build_runner_overview(
+    config: &AppConfig,
+    runner_agent: &LaunchAgentStatus,
+    state: &AppState,
+    now_unix_ms: u128,
+) -> RunnerOverview {
+    let interval_ms = u128::from(config.runner.cycle_interval_minutes) * 60 * 1000;
+    let (due, next_due_at_unix_ms) = runner_due_status(
+        state.runner.last_live_cycle_finished_at_unix_ms,
+        interval_ms,
+        now_unix_ms,
+    );
+
+    RunnerOverview {
+        agent: runner_agent.clone(),
+        cycle_interval_minutes: config.runner.cycle_interval_minutes,
+        tick_interval_minutes: config.runner.launch_agent.tick_interval_minutes,
+        due,
+        last_live_cycle_finished_at_unix_ms: state.runner.last_live_cycle_finished_at_unix_ms,
+        next_due_at_unix_ms,
+        last_cycle: state
+            .runner
+            .last_cycle
+            .as_ref()
+            .map(|cycle| RunnerCycleSummary {
+                dry_run: cycle.dry_run,
+                started_at_unix_ms: cycle.started_at_unix_ms,
+                finished_at_unix_ms: cycle.finished_at_unix_ms,
+                outcome: cycle.outcome,
+                approved_target_count: cycle.approved_target_count,
+                active_alert_count: cycle.active_alert_count,
+                summary: cycle.summary.clone(),
+            }),
+        last_tick: state
+            .runner
+            .last_tick
+            .as_ref()
+            .map(|tick| RunnerTickSummary {
+                dry_run: tick.dry_run,
+                finished_at_unix_ms: tick.finished_at_unix_ms,
+                due: tick.due,
+                outcome: tick.outcome,
+                next_due_at_unix_ms: tick.next_due_at_unix_ms,
+                summary: tick.summary.clone(),
+            }),
+    }
+}
+
+fn build_target_health_overview(
+    evaluations: &[TargetEvaluation],
+    approved_targets: &[ApprovedTargetOverview],
+    state: &AppState,
+) -> TargetHealthOverview {
+    let ready_target_count = evaluations
+        .iter()
+        .filter(|evaluation| evaluation.ready)
+        .count();
+    let live_success_target_count = evaluations
+        .iter()
+        .filter(|evaluation| {
+            lookup_target_run_state(state, &evaluation.target)
+                .and_then(|run_state| run_state.last_success_at_unix_ms)
+                .is_some()
+        })
+        .count();
+
+    TargetHealthOverview {
+        total_target_count: evaluations.len(),
+        managed_target_count: evaluations
+            .iter()
+            .filter(|evaluation| {
+                matches!(
+                    evaluation.target.legacy_mode,
+                    crate::model::LegacySyncMode::Managed
+                )
+            })
+            .count(),
+        approved_target_count: approved_targets.len(),
+        resolved_approved_target_count: approved_targets
+            .iter()
+            .filter(|target| target.resolved)
+            .count(),
+        ready_target_count,
+        blocked_target_count: evaluations.len().saturating_sub(ready_target_count),
+        ready_approved_target_count: approved_targets
+            .iter()
+            .filter(|target| {
+                target
+                    .evaluation
+                    .as_ref()
+                    .map(|evaluation| evaluation.ready)
+                    .unwrap_or(false)
+            })
+            .count(),
+        live_success_target_count,
+    }
+}
+
+fn build_approved_target_overview(
+    approved_selectors: &[String],
+    evaluations: &[TargetEvaluation],
+    state: &AppState,
+) -> Vec<ApprovedTargetOverview> {
+    approved_selectors
+        .iter()
+        .map(|selector| {
+            let selector_path = expand_path(Path::new(selector));
+            let evaluation = evaluations
+                .iter()
+                .find(|evaluation| {
+                    target_matches_selector(&evaluation.target, selector, &selector_path)
+                })
+                .cloned();
+            let last_run = evaluation
+                .as_ref()
+                .and_then(|evaluation| lookup_target_run_state(state, &evaluation.target))
+                .map(map_recent_target_run_summary);
+
+            match evaluation {
+                Some(evaluation) => {
+                    let detail = if evaluation.ready {
+                        "approved target is ready".to_string()
+                    } else {
+                        format!("{} blocker(s) still active", evaluation.blockers.len())
+                    };
+                    ApprovedTargetOverview {
+                        selector: selector.clone(),
+                        resolved: true,
+                        detail,
+                        evaluation: Some(evaluation),
+                        last_run,
+                    }
+                }
+                None => ApprovedTargetOverview {
+                    selector: selector.clone(),
+                    resolved: false,
+                    detail:
+                        "update runner.approved_targets so every selector matches a current target"
+                            .to_string(),
+                    evaluation: None,
+                    last_run: None,
+                },
+            }
+        })
+        .collect()
+}
+
+fn build_recent_target_run_summaries(state: &AppState) -> Vec<RecentTargetRunSummary> {
+    let mut runs = state
+        .target_runs
+        .values()
+        .map(map_recent_target_run_summary)
+        .collect::<Vec<_>>();
+    runs.sort_by(|left, right| right.finished_at_unix_ms.cmp(&left.finished_at_unix_ms));
+    runs
+}
+
+fn map_recent_target_run_summary(run_state: &TargetRunState) -> RecentTargetRunSummary {
+    RecentTargetRunSummary {
+        target_name: run_state.target_name.clone(),
+        target_id: run_state.target_id.clone(),
+        local_path: run_state.local_path.clone(),
+        effective_mode: run_state.effective_mode,
+        outcome: run_state.outcome,
+        finished_at_unix_ms: run_state.finished_at_unix_ms,
+        last_success_at_unix_ms: run_state.last_success_at_unix_ms,
+        summary: run_state.summary.clone(),
+    }
 }
 
 struct LegacyLockGuard {
@@ -2384,7 +2624,8 @@ fn execute_resume(config: &AppConfig, config_source: &str, target: ActionTarget)
 }
 
 fn pause_local_launch_agent(config: &AppConfig) -> ActionStep {
-    let launch_agent = probe_launch_agent(&config.launch_agent_label, Some(&config.launch_agent_path));
+    let launch_agent =
+        probe_launch_agent(&config.launch_agent_label, Some(&config.launch_agent_path));
     if !launch_agent.loaded {
         return skipped_step(
             "pause_local_launch_agent",
@@ -2426,7 +2667,8 @@ fn pause_local_launch_agent(config: &AppConfig) -> ActionStep {
 }
 
 fn resume_local_launch_agent(config: &AppConfig) -> ActionStep {
-    let launch_agent = probe_launch_agent(&config.launch_agent_label, Some(&config.launch_agent_path));
+    let launch_agent =
+        probe_launch_agent(&config.launch_agent_label, Some(&config.launch_agent_path));
     if launch_agent.loaded {
         return skipped_step(
             "resume_local_launch_agent",
@@ -2622,9 +2864,11 @@ fn record_cycle_run(config: &AppConfig, report: &RunCycleReport, started_at_unix
         None
     };
 
-    if let Err(error) =
-        save_runner_cycle(&config.state_path, state, last_live_cycle_finished_at_unix_ms)
-    {
+    if let Err(error) = save_runner_cycle(
+        &config.state_path,
+        state,
+        last_live_cycle_finished_at_unix_ms,
+    ) {
         eprintln!("syncsteward: failed to record cycle state: {error}");
     }
 }
@@ -3763,8 +4007,9 @@ impl ActionTarget {
 mod tests {
     use super::{
         ActionOutcome, ActionStepStatus, add_managed_target, alert_signature, analyze_log_contents,
-        ensure_target_ids, evaluate_preflight, relocate_managed_target, runner_due_status,
-        scheduled_notify_alerts, summarize_outcome, target_state_key,
+        build_recent_target_run_summaries, ensure_target_ids, evaluate_preflight,
+        relocate_managed_target, runner_due_status, scheduled_notify_alerts, summarize_outcome,
+        target_state_key,
     };
     use crate::config::{AppConfig, ManagedTarget, PolicyConfig, PolicyMode, load_config};
     use crate::model::{
@@ -3772,7 +4017,7 @@ mod tests {
         CheckStatus, LaunchAgentStatus, PolicySummary, RemoteStatus, ServiceState, StatusReport,
         SyncTargetRecord,
     };
-    use crate::state::{AlertNotificationState, AppState};
+    use crate::state::{AlertNotificationState, AppState, TargetRunState};
     use std::fs;
     use std::path::PathBuf;
     use uuid::Uuid;
@@ -3931,6 +4176,45 @@ path1 and path2 are out of sync, run --resync to recover\n\
     }
 
     #[test]
+    fn recent_target_runs_are_sorted_newest_first() {
+        let mut state = AppState::default();
+        state.target_runs.insert(
+            "older".to_string(),
+            TargetRunState {
+                target_name: "Older".to_string(),
+                target_id: Some("older".to_string()),
+                local_path: PathBuf::from("/tmp/older"),
+                effective_mode: PolicyMode::BackupOnly,
+                outcome: ActionOutcome::Success,
+                dry_run: false,
+                finished_at_unix_ms: 100,
+                last_success_at_unix_ms: Some(100),
+                summary: "older summary".to_string(),
+            },
+        );
+        state.target_runs.insert(
+            "newer".to_string(),
+            TargetRunState {
+                target_name: "Newer".to_string(),
+                target_id: Some("newer".to_string()),
+                local_path: PathBuf::from("/tmp/newer"),
+                effective_mode: PolicyMode::BackupOnly,
+                outcome: ActionOutcome::NoOp,
+                dry_run: false,
+                finished_at_unix_ms: 200,
+                last_success_at_unix_ms: Some(150),
+                summary: "newer summary".to_string(),
+            },
+        );
+
+        let runs = build_recent_target_run_summaries(&state);
+
+        assert_eq!(runs.len(), 2);
+        assert_eq!(runs[0].target_name, "Newer");
+        assert_eq!(runs[1].target_name, "Older");
+    }
+
+    #[test]
     fn ensure_target_ids_assigns_missing_ids() {
         let temp_path =
             std::env::temp_dir().join(format!("syncsteward-test-{}.toml", Uuid::now_v7()));
@@ -4083,8 +4367,7 @@ path1 and path2 are out of sync, run --resync to recover\n\
         assert!(due_without_history);
         assert_eq!(next_due_without_history, None);
 
-        let (due_too_soon, next_due_too_soon) =
-            runner_due_status(Some(1_000), 60_000, 30_000);
+        let (due_too_soon, next_due_too_soon) = runner_due_status(Some(1_000), 60_000, 30_000);
         assert!(!due_too_soon);
         assert_eq!(next_due_too_soon, Some(61_000));
 
@@ -4145,10 +4428,12 @@ path1 and path2 are out of sync, run --resync to recover\n\
             scheduled_notify_alerts(&config, &state, &alerts, true).expect("scheduled decision");
 
         assert_eq!(decision.report.outcome, ActionOutcome::NoOp);
-        assert!(decision
-            .report
-            .summary
-            .contains("suppressed repeat notification"));
+        assert!(
+            decision
+                .report
+                .summary
+                .contains("suppressed repeat notification")
+        );
         assert!(decision.updated_state.is_none());
     }
 
@@ -4178,7 +4463,10 @@ path1 and path2 are out of sync, run --resync to recover\n\
             "alerts cleared without recovery notification"
         );
         assert_eq!(
-            decision.updated_state.expect("updated state").active_signature,
+            decision
+                .updated_state
+                .expect("updated state")
+                .active_signature,
             None
         );
     }

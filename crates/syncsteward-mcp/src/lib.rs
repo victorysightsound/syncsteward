@@ -10,19 +10,18 @@ use serde::Deserialize;
 use std::path::PathBuf;
 use syncsteward_core::{
     ActionTarget, AddManagedTargetReport, AlertReport, ConfigScaffoldReport, ControlReport,
-    EnsureTargetIdsReport, LogAcknowledgeReport, NotifyAlertsReport, PolicyMode, PreflightReport,
-    RelocateManagedTargetReport, RunCycleReport, RunnerAgentControlReport,
+    EnsureTargetIdsReport, LogAcknowledgeReport, NotifyAlertsReport, OverviewReport, PolicyMode,
+    PreflightReport, RelocateManagedTargetReport, RunCycleReport, RunnerAgentControlReport,
     RunnerAgentStatusReport, RunnerTickReport, StatusReport, SyncTargetInventoryReport,
     TargetCheckReport, TargetCheckSetReport, TargetRunReport,
     acknowledge_latest_log as core_acknowledge_latest_log,
     add_managed_target as core_add_managed_target, alerts as core_alerts,
     check_target as core_check_target, check_targets as core_check_targets,
     ensure_target_ids as core_ensure_target_ids, install_runner_agent as core_install_runner_agent,
-    notify_alerts as core_notify_alerts, pause, preflight,
-    relocate_managed_target as core_relocate_managed_target, resume,
-    run_cycle as core_run_cycle, run_target as core_run_target,
-    runner_agent_status as core_runner_agent_status, runner_tick as core_runner_tick,
-    scaffold_config as core_scaffold_config, status, targets,
+    notify_alerts as core_notify_alerts, overview as core_overview, pause, preflight,
+    relocate_managed_target as core_relocate_managed_target, resume, run_cycle as core_run_cycle,
+    run_target as core_run_target, runner_agent_status as core_runner_agent_status,
+    runner_tick as core_runner_tick, scaffold_config as core_scaffold_config, status, targets,
     uninstall_runner_agent as core_uninstall_runner_agent,
 };
 
@@ -105,6 +104,18 @@ impl ServerHandler for SyncStewardMcpServer {
 
 #[tool_router(router = tool_router)]
 impl SyncStewardMcpServer {
+    #[tool(
+        description = "Read one composed SyncSteward overview across preflight, alerts, runner state, approved targets, and recent run history."
+    )]
+    async fn overview(&self) -> McpResult<OverviewReport> {
+        let config_path = self.config_path.clone();
+        let report = tokio::task::spawn_blocking(move || core_overview(config_path.as_deref()))
+            .await
+            .map_err(|error| error.to_string())?
+            .map_err(|error| error.to_string())?;
+        Ok(Json(report))
+    }
+
     #[tool(
         description = "Read the current sync health snapshot, including local and remote writer state, drift artifacts, and the latest rclone log summary."
     )]
@@ -251,17 +262,14 @@ impl SyncStewardMcpServer {
         Ok(Json(report))
     }
 
-    #[tool(
-        description = "Read the dedicated SyncSteward runner launch agent state."
-    )]
+    #[tool(description = "Read the dedicated SyncSteward runner launch agent state.")]
     async fn runner_agent_status(&self) -> McpResult<RunnerAgentStatusReport> {
         let config_path = self.config_path.clone();
-        let report = tokio::task::spawn_blocking(move || {
-            core_runner_agent_status(config_path.as_deref())
-        })
-        .await
-        .map_err(|error| error.to_string())?
-        .map_err(|error| error.to_string())?;
+        let report =
+            tokio::task::spawn_blocking(move || core_runner_agent_status(config_path.as_deref()))
+                .await
+                .map_err(|error| error.to_string())?
+                .map_err(|error| error.to_string())?;
         Ok(Json(report))
     }
 
