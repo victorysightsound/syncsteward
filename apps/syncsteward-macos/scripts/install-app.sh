@@ -18,7 +18,7 @@ launcher_path="$macos_dir/SyncSteward"
 swift build --package-path "$package_path" >/dev/null
 cargo build -p syncsteward-cli >/dev/null
 
-python3 "$repo_root/branding/generate_brand_assets.py" >/dev/null
+swift "$package_path/scripts/generate-placeholder-icon.swift" "$iconset_dir" >/dev/null
 iconutil -c icns "$iconset_dir" -o "$icns_source"
 
 mkdir -p "$macos_dir" "$resources_dir"
