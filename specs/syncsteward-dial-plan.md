@@ -58,6 +58,7 @@
 
 - add a menu bar app
 - start with a native macOS shell that reads the composed `overview` surface and exposes only safe refresh/open actions
+- provide a thin installer path that places `SyncSteward.app` in `~/Applications` without splitting app-bundle behavior away from the dev-built shell and CLI
 - show green/yellow/red health state
 - expose sync now, pause, resume, open logs, and reveal conflicts
 - keep all real logic in the shared core plus CLI and MCP layers

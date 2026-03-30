@@ -205,6 +205,7 @@ Monitoring should build on the same state model rather than inventing a separate
 - scheduled notifications should suppress unchanged alert sets inside a repeat window and optionally send one recovery notification when the active set clears
 - one composed overview surface should summarize preflight, runner cadence, approved-target readiness, recent target history, and active alerts for CLI, MCP, and future UI consumers
 - the first native macOS shell should consume that overview contract rather than reimplementing status stitching or sync sequencing
+- the first native macOS shell may be installed as a thin local app bundle wrapper that still launches the current dev-built shell and CLI rather than forking a separate desktop logic path
 
 The next daemon-ready layer should also stay inside the same guarded model:
 

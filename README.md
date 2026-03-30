@@ -74,6 +74,18 @@ Build it with:
 swift build --package-path apps/syncsteward-macos
 ```
 
+Install or refresh the local app bundle with:
+
+```bash
+apps/syncsteward-macos/scripts/install-app.sh
+```
+
+That installs:
+
+- `~/Applications/SyncSteward.app`
+
+The installer keeps the app bundle thin. It launches the current dev-built SwiftUI shell and points it at the current dev-built `syncsteward-cli`.
+
 ## Protected Bundles
 
 SyncSteward now applies first-class target exclusions for native Apple media libraries:
