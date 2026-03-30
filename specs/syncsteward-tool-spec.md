@@ -273,6 +273,8 @@ Rules:
 - runs `run-cycle` only when the approved set is due
 - otherwise returns a safe no-op report with the current alert snapshot
 - may send post-tick alert notifications when enabled in config
+- suppresses repeated notifications for the same unchanged alert set until the configured repeat window expires
+- may send one recovery notification when a previously active alert set clears
 - is the intended entry point for future launchd, daemon, and menu bar scheduling
 
 Supports:
@@ -357,6 +359,7 @@ Outputs:
 - generated timestamp
 - overall preflight readiness
 - stale-success threshold
+- repeat-notification threshold
 - active alerts with severity, summary, detail, and target context
 
 Rules:
@@ -386,6 +389,7 @@ Rules:
 - no-op when there are no active alerts
 - respects the config toggle for macOS notifications
 - supports dry-run for validation
+- direct operator-triggered notify runs remain explicit and are not subject to scheduled repeat suppression
 
 Supports:
 

@@ -50,6 +50,8 @@
 - add a scheduled runner-tick command that only executes the approved cycle when due
 - add a dedicated SyncSteward runner launch agent that schedules `runner-tick` without reusing the legacy broad sync job
 - refine alert deduplication and escalation after the first notification slice lands
+- suppress repeated scheduled notifications for unchanged alert sets until a configurable repeat window expires
+- send one recovery notification when a previously active alert set clears
 
 ## Phase 5: UI
 

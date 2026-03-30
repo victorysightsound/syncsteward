@@ -64,8 +64,12 @@ pub struct ManagedTarget {
 pub struct AlertConfig {
     #[serde(default = "default_stale_success_after_hours")]
     pub stale_success_after_hours: u64,
+    #[serde(default = "default_repeat_notification_after_minutes")]
+    pub repeat_notification_after_minutes: u64,
     #[serde(default = "default_enable_macos_notifications")]
     pub enable_macos_notifications: bool,
+    #[serde(default = "default_recovery_notifications")]
+    pub recovery_notifications: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -175,7 +179,9 @@ impl Default for AlertConfig {
     fn default() -> Self {
         Self {
             stale_success_after_hours: default_stale_success_after_hours(),
+            repeat_notification_after_minutes: default_repeat_notification_after_minutes(),
             enable_macos_notifications: default_enable_macos_notifications(),
+            recovery_notifications: default_recovery_notifications(),
         }
     }
 }
@@ -288,6 +294,14 @@ fn default_stale_success_after_hours() -> u64 {
 }
 
 fn default_enable_macos_notifications() -> bool {
+    true
+}
+
+fn default_repeat_notification_after_minutes() -> u64 {
+    240
+}
+
+fn default_recovery_notifications() -> bool {
     true
 }
 
@@ -571,6 +585,9 @@ fn normalize_config(mut config: AppConfig) -> Result<AppConfig> {
     }
     if config.alerts.stale_success_after_hours == 0 {
         bail!("alerts.stale_success_after_hours must be greater than zero");
+    }
+    if config.alerts.repeat_notification_after_minutes == 0 {
+        bail!("alerts.repeat_notification_after_minutes must be greater than zero");
     }
     let mut approved_targets = BTreeSet::new();
     for selector in &config.runner.approved_targets {

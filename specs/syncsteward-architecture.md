@@ -73,6 +73,7 @@ Configuration now carries both operator paths and safety policy:
 - target-specific exclusion rules for protected bundles and subtrees
 - target-specific snapshot rules for runtime SQLite-backed targets
 - alert thresholds and notification toggles
+- alert repeat-suppression and recovery-notification settings
 - runner settings for the approved target set, cycle cadence, dedicated runner launch-agent settings, and post-cycle/post-tick notification behavior
 
 ### Status
@@ -201,6 +202,7 @@ Monitoring should build on the same state model rather than inventing a separate
 - executable targets without any successful live run should surface as alerts
 - stale-success thresholds should be configurable
 - local notifications should summarize active alerts without hiding the underlying details
+- scheduled notifications should suppress unchanged alert sets inside a repeat window and optionally send one recovery notification when the active set clears
 
 The next daemon-ready layer should also stay inside the same guarded model:
 

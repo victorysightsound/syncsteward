@@ -34,7 +34,7 @@ SyncSteward does not restart sync automatically. The current build exposes:
 - single-target execution for approved `backup_only` targets, with dry-run support, legacy lock protection, and per-target audit/state records
 - approved-target cycle execution from config, so future daemon and UI layers can drive one guarded orchestration entry point
 - daemon-ready `runner-tick` scheduling that only executes the approved cycle when it is due
-- alert evaluation for stale or missing target runs, plus local notification support
+- alert evaluation for stale or missing target runs, plus deduplicated local notification support
 
 ## Interfaces
 
@@ -95,6 +95,7 @@ SyncSteward now has a config-backed cycle command for the approved healthy subse
 - `run-cycle` now holds the legacy sync lock for the full cycle, so overlapping cycles and manual target runs cannot interleave
 - dry-run validation still writes audit history, but it does not overwrite the live target-run state that drives alerts
 - `runner-tick` is the daemon-ready entry point: it checks whether the approved cycle is due, runs it only when needed, and otherwise no-ops with the current alert snapshot
+- scheduled notifications now suppress unchanged alert sets inside a repeat window and can send one recovery notification when alerts clear
 - `install-runner-agent` writes and loads `com.syncsteward.runner`, which schedules `runner-tick` independently of the paused legacy `com.cloud-sync` job
 - this is the first daemon-ready entry point for future scheduling, menu bar UI actions, and MCP orchestration
 - broad legacy folders can stay on `hold` while the approved subset keeps running safely

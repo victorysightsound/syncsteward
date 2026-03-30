@@ -15,8 +15,9 @@ use crate::model::{
     TargetRunReport,
 };
 use crate::state::{
-    RunnerCycleState, RunnerTickState, TargetRunState, load_state, matches_acknowledged_log,
-    save_acknowledged_log, save_runner_cycle, save_runner_tick, save_target_run,
+    AlertNotificationState, RunnerCycleState, RunnerTickState, TargetRunState, load_state,
+    matches_acknowledged_log, save_acknowledged_log, save_alert_notification_state,
+    save_runner_cycle, save_runner_tick, save_target_run,
 };
 use anyhow::{Result, anyhow};
 use serde::Serialize;
@@ -48,35 +49,102 @@ pub fn alerts(config_path: Option<&Path>) -> Result<AlertReport> {
 pub fn notify_alerts(config_path: Option<&Path>, dry_run: bool) -> Result<NotifyAlertsReport> {
     let loaded = load_config(config_path)?;
     let report = evaluate_alerts(&loaded.config, loaded.source.description())?;
+    let notify = send_alert_notification(
+        &loaded.config,
+        dry_run,
+        NotificationRequest {
+            alerts: &report.alerts,
+            allow_empty: false,
+            title: "SyncSteward",
+            subtitle: &format!(
+                "{} active alert{}",
+                report.alerts.len(),
+                if report.alerts.len() == 1 { "" } else { "s" }
+            ),
+            body: &summarize_alerts_notification(&report.alerts),
+            empty_summary: "no active alerts".to_string(),
+            disabled_summary: "notifications are disabled".to_string(),
+            dry_run_summary: format!("dry run would notify {} active alerts", report.alerts.len()),
+            success_summary: format!("sent notification for {} active alerts", report.alerts.len()),
+        },
+    )?;
+
+    if notify.outcome == ActionOutcome::Success && !dry_run {
+        let now = now_unix_ms();
+        let signature = Some(alert_signature(&report.alerts));
+        let updated_state = AlertNotificationState {
+            active_signature: signature.clone(),
+            active_since_unix_ms: Some(now),
+            last_notified_signature: signature,
+            last_notified_at_unix_ms: Some(now),
+            repeat_count: 1,
+        };
+        if let Err(error) = save_alert_notification_state(&loaded.config.state_path, updated_state) {
+            eprintln!("syncsteward: failed to record direct alert notification state: {error}");
+        }
+    }
+
+    Ok(NotifyAlertsReport {
+        outcome: notify.outcome,
+        summary: notify.summary,
+        dry_run,
+        alerts: report.alerts,
+        steps: notify.steps,
+    })
+}
+
+struct NotificationRequest<'a> {
+    alerts: &'a [AlertRecord],
+    allow_empty: bool,
+    title: &'a str,
+    subtitle: &'a str,
+    body: &'a str,
+    empty_summary: String,
+    disabled_summary: String,
+    dry_run_summary: String,
+    success_summary: String,
+}
+
+struct NotificationDispatch {
+    outcome: ActionOutcome,
+    summary: String,
+    steps: Vec<ActionStep>,
+}
+
+struct ScheduledNotificationDecision {
+    report: NotifyAlertsReport,
+    updated_state: Option<AlertNotificationState>,
+}
+
+fn send_alert_notification(
+    config: &AppConfig,
+    dry_run: bool,
+    request: NotificationRequest<'_>,
+) -> Result<NotificationDispatch> {
     let mut steps = Vec::new();
 
-    if report.alerts.is_empty() {
+    if request.alerts.is_empty() && !request.allow_empty {
         steps.push(skipped_step(
             "alerts_snapshot",
             "no active alerts to notify".to_string(),
             "alert evaluation returned no active issues".to_string(),
         ));
-        return Ok(NotifyAlertsReport {
+        return Ok(NotificationDispatch {
             outcome: ActionOutcome::NoOp,
-            summary: "no active alerts".to_string(),
-            dry_run,
-            alerts: report.alerts,
+            summary: request.empty_summary,
             steps,
         });
     }
 
-    let summary = summarize_alerts_notification(&report.alerts);
-    if !loaded.config.alerts.enable_macos_notifications {
+    if !config.alerts.enable_macos_notifications {
         steps.push(skipped_step(
             "macos_notifications",
             "macOS notifications are disabled in config".to_string(),
-            summary.clone(),
+            request.body.to_string(),
         ));
-        return Ok(NotifyAlertsReport {
+        return Ok(NotificationDispatch {
             outcome: ActionOutcome::NoOp,
-            summary: "notifications are disabled".to_string(),
-            dry_run,
-            alerts: report.alerts,
+            summary: request.disabled_summary,
             steps,
         });
     }
@@ -85,13 +153,11 @@ pub fn notify_alerts(config_path: Option<&Path>, dry_run: bool) -> Result<Notify
         steps.push(applied_step(
             "macos_notifications",
             "dry run prepared a macOS notification".to_string(),
-            summary.clone(),
+            request.body.to_string(),
         ));
-        return Ok(NotifyAlertsReport {
+        return Ok(NotificationDispatch {
             outcome: ActionOutcome::Success,
-            summary: format!("dry run would notify {} active alerts", report.alerts.len()),
-            dry_run,
-            alerts: report.alerts,
+            summary: request.dry_run_summary,
             steps,
         });
     }
@@ -102,13 +168,9 @@ pub fn notify_alerts(config_path: Option<&Path>, dry_run: bool) -> Result<Notify
             "-e",
             format!(
                 "display notification {} with title {} subtitle {}",
-                apple_script_string(&summary),
-                apple_script_string("SyncSteward"),
-                apple_script_string(&format!(
-                    "{} active alert{}",
-                    report.alerts.len(),
-                    if report.alerts.len() == 1 { "" } else { "s" }
-                )),
+                apple_script_string(request.body),
+                apple_script_string(request.title),
+                apple_script_string(request.subtitle),
             )
             .as_str(),
         ],
@@ -118,16 +180,11 @@ pub fn notify_alerts(config_path: Option<&Path>, dry_run: bool) -> Result<Notify
         steps.push(applied_step(
             "macos_notifications",
             "sent a macOS notification".to_string(),
-            summary.clone(),
+            request.body.to_string(),
         ));
-        Ok(NotifyAlertsReport {
+        Ok(NotificationDispatch {
             outcome: ActionOutcome::Success,
-            summary: format!(
-                "sent notification for {} active alerts",
-                report.alerts.len()
-            ),
-            dry_run,
-            alerts: report.alerts,
+            summary: request.success_summary,
             steps,
         })
     } else {
@@ -136,13 +193,271 @@ pub fn notify_alerts(config_path: Option<&Path>, dry_run: bool) -> Result<Notify
             "failed to send a macOS notification".to_string(),
             summarize_command_output(&output),
         ));
-        Ok(NotifyAlertsReport {
+        Ok(NotificationDispatch {
             outcome: ActionOutcome::Failed,
             summary: "failed to send notification".to_string(),
-            dry_run,
-            alerts: report.alerts,
             steps,
         })
+    }
+}
+
+fn scheduled_notify_alerts(
+    config: &AppConfig,
+    state: &crate::state::AppState,
+    alerts: &[AlertRecord],
+    dry_run: bool,
+) -> Result<ScheduledNotificationDecision> {
+    let now = now_unix_ms();
+    let existing = state.alert_notifications.clone();
+
+    if alerts.is_empty() {
+        if existing.active_signature.is_none() {
+            return Ok(ScheduledNotificationDecision {
+                report: NotifyAlertsReport {
+                    outcome: ActionOutcome::NoOp,
+                    summary: "no active alerts".to_string(),
+                    dry_run,
+                    alerts: Vec::new(),
+                    steps: vec![skipped_step(
+                        "alerts_snapshot",
+                        "no active alerts to notify".to_string(),
+                        "alert evaluation returned no active issues".to_string(),
+                    )],
+                },
+                updated_state: None,
+            });
+        }
+
+        let cleared_state = AlertNotificationState::default();
+        if config.alerts.recovery_notifications {
+            let dispatch = send_alert_notification(
+                config,
+                dry_run,
+                NotificationRequest {
+                    alerts,
+                    allow_empty: true,
+                    title: "SyncSteward",
+                    subtitle: "alerts cleared",
+                    body: "all active SyncSteward alerts have cleared",
+                    empty_summary: "no active alerts".to_string(),
+                    disabled_summary: "notifications are disabled".to_string(),
+                    dry_run_summary: "dry run would notify that alerts cleared".to_string(),
+                    success_summary: "sent recovery notification".to_string(),
+                },
+            )?;
+            return Ok(ScheduledNotificationDecision {
+                report: NotifyAlertsReport {
+                    outcome: dispatch.outcome,
+                    summary: dispatch.summary,
+                    dry_run,
+                    alerts: Vec::new(),
+                    steps: dispatch.steps,
+                },
+                updated_state: if dry_run { None } else { Some(cleared_state) },
+            });
+        }
+
+        return Ok(ScheduledNotificationDecision {
+            report: NotifyAlertsReport {
+                outcome: ActionOutcome::NoOp,
+                summary: "alerts cleared without recovery notification".to_string(),
+                dry_run,
+                alerts: Vec::new(),
+                steps: vec![skipped_step(
+                    "macos_notifications",
+                    "recovery notifications are disabled".to_string(),
+                    "the prior active alert set was cleared from state without sending a recovery notification"
+                        .to_string(),
+                )],
+            },
+            updated_state: if dry_run { None } else { Some(cleared_state) },
+        });
+    }
+
+    let signature = alert_signature(alerts);
+    let repeat_after_ms = u128::from(config.alerts.repeat_notification_after_minutes) * 60 * 1000;
+
+    if existing.active_signature.as_deref() != Some(signature.as_str()) {
+        let summary = summarize_alerts_notification(alerts);
+        let body = summary.clone();
+        let dispatch = send_alert_notification(
+            config,
+            dry_run,
+            NotificationRequest {
+                alerts,
+                allow_empty: false,
+                title: "SyncSteward",
+                subtitle: &format!(
+                    "{} active alert{}",
+                    alerts.len(),
+                    if alerts.len() == 1 { "" } else { "s" }
+                ),
+                body: &body,
+                empty_summary: "no active alerts".to_string(),
+                disabled_summary: "notifications are disabled".to_string(),
+                dry_run_summary: format!("dry run would notify {} active alerts", alerts.len()),
+                success_summary: format!("sent notification for {} active alerts", alerts.len()),
+            },
+        )?;
+
+        let updated_state = AlertNotificationState {
+            active_signature: Some(signature),
+            active_since_unix_ms: Some(now),
+            last_notified_signature: if dispatch.outcome == ActionOutcome::Success && !dry_run {
+                Some(alert_signature(alerts))
+            } else {
+                None
+            },
+            last_notified_at_unix_ms: if dispatch.outcome == ActionOutcome::Success && !dry_run {
+                Some(now)
+            } else {
+                None
+            },
+            repeat_count: if dispatch.outcome == ActionOutcome::Success && !dry_run {
+                1
+            } else {
+                0
+            },
+        };
+
+        return Ok(ScheduledNotificationDecision {
+            report: NotifyAlertsReport {
+                outcome: dispatch.outcome,
+                summary: dispatch.summary,
+                dry_run,
+                alerts: alerts.to_vec(),
+                steps: dispatch.steps,
+            },
+            updated_state: if dry_run { None } else { Some(updated_state) },
+        });
+    } else {
+        let since_last_notification = existing
+            .last_notified_at_unix_ms
+            .map(|last| now.saturating_sub(last));
+        if existing.last_notified_signature.as_deref() != Some(signature.as_str())
+            || since_last_notification.is_none()
+            || since_last_notification.is_some_and(|age| age >= repeat_after_ms)
+        {
+            let age_minutes = since_last_notification.unwrap_or_default() / 60_000;
+            let repeat_count = existing.repeat_count.saturating_add(1).max(1);
+            let summary = summarize_alerts_notification(alerts);
+            let body = if repeat_count > 1 {
+                format!(
+                    "persistent alert set continues ({repeat_count} notifications, last sent {age_minutes} minutes ago): {summary}"
+                )
+            } else {
+                summary
+            };
+            let dispatch = send_alert_notification(
+                config,
+                dry_run,
+                NotificationRequest {
+                    alerts,
+                    allow_empty: false,
+                    title: "SyncSteward",
+                    subtitle: if repeat_count > 1 {
+                        "persistent alerts"
+                    } else {
+                        "active alerts"
+                    },
+                    body: &body,
+                    empty_summary: "no active alerts".to_string(),
+                    disabled_summary: "notifications are disabled".to_string(),
+                    dry_run_summary: if repeat_count > 1 {
+                        "dry run would repeat a persistent alert notification".to_string()
+                    } else {
+                        format!("dry run would notify {} active alerts", alerts.len())
+                    },
+                    success_summary: if repeat_count > 1 {
+                        format!("sent persistent notification for {} active alerts", alerts.len())
+                    } else {
+                        format!("sent notification for {} active alerts", alerts.len())
+                    },
+                },
+            )?;
+
+            let updated_state = AlertNotificationState {
+                active_signature: Some(signature),
+                active_since_unix_ms: existing.active_since_unix_ms.or(Some(now)),
+                last_notified_signature: if dispatch.outcome == ActionOutcome::Success && !dry_run {
+                    Some(alert_signature(alerts))
+                } else {
+                    existing.last_notified_signature
+                },
+                last_notified_at_unix_ms: if dispatch.outcome == ActionOutcome::Success && !dry_run {
+                    Some(now)
+                } else {
+                    existing.last_notified_at_unix_ms
+                },
+                repeat_count: if dispatch.outcome == ActionOutcome::Success && !dry_run {
+                    repeat_count
+                } else {
+                    existing.repeat_count
+                },
+            };
+
+            return Ok(ScheduledNotificationDecision {
+                report: NotifyAlertsReport {
+                    outcome: dispatch.outcome,
+                    summary: dispatch.summary,
+                    dry_run,
+                    alerts: alerts.to_vec(),
+                    steps: dispatch.steps,
+                },
+                updated_state: if dry_run { None } else { Some(updated_state) },
+            });
+        }
+
+        let updated_state = AlertNotificationState {
+            active_signature: Some(signature),
+            active_since_unix_ms: existing.active_since_unix_ms.or(Some(now)),
+            last_notified_signature: existing.last_notified_signature,
+            last_notified_at_unix_ms: existing.last_notified_at_unix_ms,
+            repeat_count: existing.repeat_count,
+        };
+
+        Ok(ScheduledNotificationDecision {
+            report: NotifyAlertsReport {
+                outcome: ActionOutcome::NoOp,
+                summary: "suppressed repeat notification for unchanged alert set".to_string(),
+                dry_run,
+                alerts: alerts.to_vec(),
+                steps: vec![skipped_step(
+                    "macos_notifications",
+                    "unchanged alert set is inside the repeat-notification window".to_string(),
+                    format!(
+                        "will repeat only after {} minutes unless the alert set changes",
+                        config.alerts.repeat_notification_after_minutes
+                    ),
+                )],
+            },
+            updated_state: if dry_run { None } else { Some(updated_state) },
+        })
+    }
+}
+
+fn notification_step(id: &str, report: &NotifyAlertsReport) -> ActionStep {
+    match report.outcome {
+        ActionOutcome::NoOp => skipped_step(
+            id,
+            "no post-tick notification sent".to_string(),
+            report.summary.clone(),
+        ),
+        ActionOutcome::Success => applied_step(
+            id,
+            "sent post-tick notification".to_string(),
+            report.summary.clone(),
+        ),
+        ActionOutcome::Failed => failed_step(
+            id,
+            "failed to send post-tick notification".to_string(),
+            report.summary.clone(),
+        ),
+        ActionOutcome::Blocked => blocked_step(
+            id,
+            "post-tick notification was blocked".to_string(),
+            report.summary.clone(),
+        ),
     }
 }
 
@@ -387,6 +702,14 @@ fn run_target_inner(
 }
 
 pub fn run_cycle(config_path: Option<&Path>, dry_run: bool) -> Result<RunCycleReport> {
+    run_cycle_inner(config_path, dry_run, true)
+}
+
+fn run_cycle_inner(
+    config_path: Option<&Path>,
+    dry_run: bool,
+    allow_cycle_notification: bool,
+) -> Result<RunCycleReport> {
     let loaded = load_config(config_path)?;
     let config_source = loaded.source.description();
     let started_at_unix_ms = now_unix_ms();
@@ -453,7 +776,7 @@ pub fn run_cycle(config_path: Option<&Path>, dry_run: bool) -> Result<RunCycleRe
     drop(cycle_lock);
 
     let alert_report = evaluate_alerts(&loaded.config, config_source.clone())?;
-    let notification = if loaded.config.runner.notify_after_cycle {
+    let notification = if allow_cycle_notification && loaded.config.runner.notify_after_cycle {
         Some(notify_alerts(config_path, dry_run)?)
     } else {
         None
@@ -499,7 +822,7 @@ pub fn runner_tick(config_path: Option<&Path>, dry_run: bool) -> Result<RunnerTi
     );
 
     let mut steps = Vec::new();
-    let (outcome, summary, preflight_ready, cycle, alerts, notification) = if due {
+    let (outcome, summary, preflight_ready, cycle, alerts, notification, alert_state_update) = if due {
         steps.push(applied_step(
             "runner_due",
             "approved target cycle is due".to_string(),
@@ -512,7 +835,7 @@ pub fn runner_tick(config_path: Option<&Path>, dry_run: bool) -> Result<RunnerTi
             },
         ));
 
-        let cycle = run_cycle(config_path, dry_run)?;
+        let cycle = run_cycle_inner(config_path, dry_run, false)?;
         steps.push(applied_step(
             "runner_cycle",
             format!(
@@ -522,13 +845,18 @@ pub fn runner_tick(config_path: Option<&Path>, dry_run: bool) -> Result<RunnerTi
             cycle.summary.clone(),
         ));
 
+        let notification = scheduled_notify_alerts(&loaded.config, &state, &cycle.alerts, dry_run)?;
+        let notification_step = notification_step("runner_notify_alerts", &notification.report);
+        steps.push(notification_step);
+
         (
             cycle.outcome,
             summarize_runner_tick(true, dry_run, cycle.outcome, &cycle.alerts),
             cycle.preflight_ready,
             Some(cycle.clone()),
             cycle.alerts.clone(),
-            cycle.notification.clone(),
+            Some(notification.report),
+            notification.updated_state,
         )
     } else {
         let next_due_at_unix_ms = next_due_at_unix_ms;
@@ -546,30 +874,10 @@ pub fn runner_tick(config_path: Option<&Path>, dry_run: bool) -> Result<RunnerTi
         ));
 
         let notification = if loaded.config.runner.notify_after_tick {
-            let report = notify_alerts(config_path, dry_run)?;
-            steps.push(match report.outcome {
-                ActionOutcome::NoOp => skipped_step(
-                    "runner_notify_alerts",
-                    "no post-tick notification sent".to_string(),
-                    report.summary.clone(),
-                ),
-                ActionOutcome::Success => applied_step(
-                    "runner_notify_alerts",
-                    "sent post-tick notification".to_string(),
-                    report.summary.clone(),
-                ),
-                ActionOutcome::Failed => failed_step(
-                    "runner_notify_alerts",
-                    "failed to send post-tick notification".to_string(),
-                    report.summary.clone(),
-                ),
-                ActionOutcome::Blocked => blocked_step(
-                    "runner_notify_alerts",
-                    "post-tick notification was blocked".to_string(),
-                    report.summary.clone(),
-                ),
-            });
-            Some(report)
+            let notification =
+                scheduled_notify_alerts(&loaded.config, &state, &alert_report.alerts, dry_run)?;
+            steps.push(notification_step("runner_notify_alerts", &notification.report));
+            Some(notification)
         } else {
             steps.push(skipped_step(
                 "runner_notify_alerts",
@@ -585,7 +893,8 @@ pub fn runner_tick(config_path: Option<&Path>, dry_run: bool) -> Result<RunnerTi
             alert_report.preflight_ready,
             None,
             alert_report.alerts,
-            notification,
+            notification.as_ref().map(|item| item.report.clone()),
+            notification.and_then(|item| item.updated_state),
         )
     };
 
@@ -604,6 +913,13 @@ pub fn runner_tick(config_path: Option<&Path>, dry_run: bool) -> Result<RunnerTi
         notification,
         steps,
     };
+    if !dry_run {
+        if let Some(alert_state) = alert_state_update {
+            if let Err(error) = save_alert_notification_state(&loaded.config.state_path, alert_state) {
+                eprintln!("syncsteward: failed to record alert notification state: {error}");
+            }
+        }
+    }
     record_runner_tick(&loaded.config, &report);
     Ok(report)
 }
@@ -1585,6 +1901,7 @@ fn evaluate_alerts(config: &AppConfig, config_source: String) -> Result<AlertRep
         generated_at_unix_ms: now,
         preflight_ready: preflight.ready,
         stale_success_after_hours: config.alerts.stale_success_after_hours,
+        repeat_notification_after_minutes: config.alerts.repeat_notification_after_minutes,
         alerts,
     })
 }
@@ -3286,6 +3603,24 @@ fn summarize_alerts_notification(alerts: &[AlertRecord]) -> String {
     items.join("; ")
 }
 
+fn alert_signature(alerts: &[AlertRecord]) -> String {
+    let mut parts = alerts
+        .iter()
+        .map(|alert| {
+            format!(
+                "{}|{:?}|{}|{}|{}",
+                alert.id,
+                alert.severity,
+                alert.target_name.as_deref().unwrap_or(""),
+                alert.summary,
+                alert.detail
+            )
+        })
+        .collect::<Vec<_>>();
+    parts.sort();
+    parts.join("\u{1f}")
+}
+
 fn format_examples(examples: &[PathBuf]) -> String {
     if examples.is_empty() {
         "no example paths recorded".to_string()
@@ -3427,15 +3762,17 @@ impl ActionTarget {
 #[cfg(test)]
 mod tests {
     use super::{
-        ActionOutcome, ActionStepStatus, add_managed_target, analyze_log_contents,
+        ActionOutcome, ActionStepStatus, add_managed_target, alert_signature, analyze_log_contents,
         ensure_target_ids, evaluate_preflight, relocate_managed_target, runner_due_status,
-        summarize_outcome, target_state_key,
+        scheduled_notify_alerts, summarize_outcome, target_state_key,
     };
     use crate::config::{AppConfig, ManagedTarget, PolicyConfig, PolicyMode, load_config};
     use crate::model::{
-        AcknowledgedLogSummary, ActionStep, ArtifactReport, CheckStatus, LaunchAgentStatus,
-        PolicySummary, RemoteStatus, ServiceState, StatusReport, SyncTargetRecord,
+        AcknowledgedLogSummary, ActionStep, AlertRecord, AlertSeverity, ArtifactReport,
+        CheckStatus, LaunchAgentStatus, PolicySummary, RemoteStatus, ServiceState, StatusReport,
+        SyncTargetRecord,
     };
+    use crate::state::{AlertNotificationState, AppState};
     use std::fs;
     use std::path::PathBuf;
     use uuid::Uuid;
@@ -3755,5 +4092,94 @@ path1 and path2 are out of sync, run --resync to recover\n\
             runner_due_status(Some(1_000), 60_000, 61_000);
         assert!(due_after_interval);
         assert_eq!(next_due_after_interval, Some(61_000));
+    }
+
+    #[test]
+    fn alert_signature_is_stable_across_order() {
+        let a = AlertRecord {
+            id: "a".to_string(),
+            severity: AlertSeverity::Warn,
+            summary: "A".to_string(),
+            detail: "detail-a".to_string(),
+            target_name: Some("one".to_string()),
+        };
+        let b = AlertRecord {
+            id: "b".to_string(),
+            severity: AlertSeverity::Critical,
+            summary: "B".to_string(),
+            detail: "detail-b".to_string(),
+            target_name: Some("two".to_string()),
+        };
+
+        assert_eq!(
+            alert_signature(&[a.clone(), b.clone()]),
+            alert_signature(&[b, a])
+        );
+    }
+
+    #[test]
+    fn scheduled_notifications_suppress_unchanged_alerts_inside_repeat_window() {
+        let mut config = AppConfig::default();
+        config.alerts.repeat_notification_after_minutes = 240;
+
+        let alerts = vec![AlertRecord {
+            id: "target_notes_blocked".to_string(),
+            severity: AlertSeverity::Warn,
+            summary: "Notes cannot run yet".to_string(),
+            detail: "policy_hold".to_string(),
+            target_name: Some("Notes".to_string()),
+        }];
+        let signature = alert_signature(&alerts);
+        let state = AppState {
+            alert_notifications: AlertNotificationState {
+                active_signature: Some(signature.clone()),
+                active_since_unix_ms: Some(1),
+                last_notified_signature: Some(signature),
+                last_notified_at_unix_ms: Some(super::now_unix_ms()),
+                repeat_count: 1,
+            },
+            ..AppState::default()
+        };
+
+        let decision =
+            scheduled_notify_alerts(&config, &state, &alerts, true).expect("scheduled decision");
+
+        assert_eq!(decision.report.outcome, ActionOutcome::NoOp);
+        assert!(decision
+            .report
+            .summary
+            .contains("suppressed repeat notification"));
+        assert!(decision.updated_state.is_none());
+    }
+
+    #[test]
+    fn scheduled_notifications_clear_state_when_alerts_recover() {
+        let mut config = AppConfig::default();
+        config.alerts.enable_macos_notifications = false;
+        config.alerts.recovery_notifications = false;
+
+        let state = AppState {
+            alert_notifications: AlertNotificationState {
+                active_signature: Some("active".to_string()),
+                active_since_unix_ms: Some(1),
+                last_notified_signature: Some("active".to_string()),
+                last_notified_at_unix_ms: Some(2),
+                repeat_count: 3,
+            },
+            ..AppState::default()
+        };
+
+        let decision =
+            scheduled_notify_alerts(&config, &state, &[], false).expect("recovery decision");
+
+        assert_eq!(decision.report.outcome, ActionOutcome::NoOp);
+        assert_eq!(
+            decision.report.summary,
+            "alerts cleared without recovery notification"
+        );
+        assert_eq!(
+            decision.updated_state.expect("updated state").active_signature,
+            None
+        );
     }
 }

@@ -135,6 +135,7 @@ pub struct AlertReport {
     pub generated_at_unix_ms: u128,
     pub preflight_ready: bool,
     pub stale_success_after_hours: u64,
+    pub repeat_notification_after_minutes: u64,
     pub alerts: Vec<AlertRecord>,
 }
 

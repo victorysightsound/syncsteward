@@ -987,6 +987,10 @@ fn print_alerts(report: &AlertReport) {
         "Stale success threshold: {} hours",
         report.stale_success_after_hours
     );
+    println!(
+        "Repeat notification threshold: {} minutes",
+        report.repeat_notification_after_minutes
+    );
     if report.alerts.is_empty() {
         println!("No active alerts.");
         return;

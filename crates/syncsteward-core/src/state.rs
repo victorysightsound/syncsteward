@@ -14,7 +14,23 @@ pub struct AppState {
     #[serde(default)]
     pub runner: RunnerState,
     #[serde(default)]
+    pub alert_notifications: AlertNotificationState,
+    #[serde(default)]
     pub target_runs: BTreeMap<String, TargetRunState>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct AlertNotificationState {
+    #[serde(default)]
+    pub active_signature: Option<String>,
+    #[serde(default)]
+    pub active_since_unix_ms: Option<u128>,
+    #[serde(default)]
+    pub last_notified_signature: Option<String>,
+    #[serde(default)]
+    pub last_notified_at_unix_ms: Option<u128>,
+    #[serde(default)]
+    pub repeat_count: u32,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -137,6 +153,16 @@ pub fn save_runner_cycle(
 pub fn save_runner_tick(path: &Path, tick: RunnerTickState) -> Result<()> {
     let mut state = load_state(path)?;
     state.runner.last_tick = Some(tick);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(path, serde_json::to_string_pretty(&state)?)?;
+    Ok(())
+}
+
+pub fn save_alert_notification_state(path: &Path, alert_state: AlertNotificationState) -> Result<()> {
+    let mut state = load_state(path)?;
+    state.alert_notifications = alert_state;
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
