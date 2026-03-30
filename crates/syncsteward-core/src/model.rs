@@ -85,6 +85,7 @@ pub enum AlertSeverity {
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct SyncTargetRecord {
+    pub target_id: Option<String>,
     pub name: String,
     pub local_path: PathBuf,
     pub remote_path: String,
@@ -264,6 +265,30 @@ pub struct ConfigScaffoldReport {
     pub overwritten: bool,
     pub folder_policy_count: usize,
     pub file_class_policy_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct EnsureTargetIdsReport {
+    pub outcome: ActionOutcome,
+    pub summary: String,
+    pub path: PathBuf,
+    pub assigned_count: usize,
+    pub preserved_count: usize,
+    pub assignments: Vec<ManagedTargetIdAssignment>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ManagedTargetIdAssignment {
+    pub target_name: String,
+    pub target_id: String,
+    pub reason: ManagedTargetIdAssignmentReason,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ManagedTargetIdAssignmentReason {
+    Missing,
+    Duplicate,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]

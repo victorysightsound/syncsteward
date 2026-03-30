@@ -2,11 +2,11 @@ use clap::{Parser, Subcommand, ValueEnum};
 use std::path::PathBuf;
 use syncsteward_core::{
     ActionOutcome, ActionStepStatus, ActionTarget, AlertReport, AlertSeverity, CheckStatus,
-    ConfigScaffoldReport, ControlReport, LogAcknowledgeReport, NotifyAlertsReport, PolicyMode,
-    PreflightReport, StatusReport, SyncTargetInventoryReport, TargetCheckReport,
-    TargetCheckSetReport, TargetRunReport, acknowledge_latest_log, alerts, check_target,
-    check_targets, notify_alerts, pause, preflight, resume, run_target, scaffold_config, status,
-    targets,
+    ConfigScaffoldReport, ControlReport, EnsureTargetIdsReport, LogAcknowledgeReport,
+    NotifyAlertsReport, PolicyMode, PreflightReport, StatusReport, SyncTargetInventoryReport,
+    TargetCheckReport, TargetCheckSetReport, TargetRunReport, acknowledge_latest_log, alerts,
+    check_target, check_targets, ensure_target_ids, notify_alerts, pause, preflight, resume,
+    run_target, scaffold_config, status, targets,
 };
 
 #[derive(Debug, Parser)]
@@ -79,6 +79,11 @@ enum Command {
     ScaffoldConfig {
         #[arg(long)]
         force: bool,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Assign stable IDs to managed targets in the SyncSteward config file.
+    EnsureTargetIds {
         #[arg(long)]
         json: bool,
     },
@@ -278,6 +283,20 @@ fn run() -> i32 {
             }
             action_exit_code(report.outcome)
         }
+        Command::EnsureTargetIds { json } => {
+            let report = match ensure_target_ids(cli.config.as_deref()) {
+                Ok(report) => report,
+                Err(error) => return fatal_error(&error.to_string()),
+            };
+            if json {
+                if print_json(&report).is_err() {
+                    return fatal_error("failed to serialize ensure-target-ids report as JSON");
+                }
+            } else {
+                print_ensure_target_ids(&report);
+            }
+            action_exit_code(report.outcome)
+        }
         Command::Pause { target, json } => {
             let report = match pause(cli.config.as_deref(), target.into()) {
                 Ok(report) => report,
@@ -465,6 +484,9 @@ fn print_targets(report: &SyncTargetInventoryReport) {
             describe_legacy_mode(target.legacy_mode),
             describe_policy_mode(target.recommended_mode),
         );
+        if let Some(target_id) = &target.target_id {
+            println!("  id: {}", target_id);
+        }
         println!("  local: {}", target.local_path.display());
         println!("  remote: {}", target.remote_path);
         if let Some(mode) = target.configured_mode {
@@ -509,6 +531,9 @@ fn print_target_evaluation(evaluation: &syncsteward_core::TargetEvaluation) {
         evaluation.target.name,
         if evaluation.ready { "ready" } else { "blocked" }
     );
+    if let Some(target_id) = &evaluation.target.target_id {
+        println!("  id: {}", target_id);
+    }
     println!("  local: {}", evaluation.target.local_path.display());
     println!("  remote: {}", evaluation.target.remote_path);
     println!(
@@ -630,6 +655,24 @@ fn print_config_scaffold(report: &ConfigScaffoldReport) {
         "Policies: {} folder overrides, {} file-class defaults",
         report.folder_policy_count, report.file_class_policy_count
     );
+}
+
+fn print_ensure_target_ids(report: &EnsureTargetIdsReport) {
+    println!("SyncSteward Ensure Target IDs: {:?}", report.outcome);
+    println!("{}", report.summary);
+    println!("Config path: {}", report.path.display());
+    println!("Assigned: {}", report.assigned_count);
+    println!("Preserved: {}", report.preserved_count);
+    if report.assignments.is_empty() {
+        println!("No target IDs were changed.");
+        return;
+    }
+    for assignment in &report.assignments {
+        println!(
+            "- {} -> {} ({:?})",
+            assignment.target_name, assignment.target_id, assignment.reason
+        );
+    }
 }
 
 fn print_path_samples(title: &str, paths: &[PathBuf]) {

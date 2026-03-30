@@ -18,6 +18,8 @@ pub struct AppState {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TargetRunState {
     pub target_name: String,
+    #[serde(default)]
+    pub target_id: Option<String>,
     pub local_path: PathBuf,
     pub effective_mode: PolicyMode,
     pub outcome: ActionOutcome,
@@ -62,15 +64,19 @@ pub fn save_acknowledged_log(path: &Path, log: &LogSummary) -> Result<Acknowledg
     Ok(acknowledged)
 }
 
-pub fn save_target_run(path: &Path, target_name: &str, run: TargetRunState) -> Result<()> {
+pub fn save_target_run(path: &Path, state_key: &str, run: TargetRunState) -> Result<()> {
     let mut state = load_state(path)?;
     let mut run = run;
-    if let Some(existing) = state.target_runs.get(target_name) {
+    if let Some(existing) = state.target_runs.get(state_key) {
+        if run.last_success_at_unix_ms.is_none() {
+            run.last_success_at_unix_ms = existing.last_success_at_unix_ms;
+        }
+    } else if let Some(existing) = state.target_runs.get(&run.target_name) {
         if run.last_success_at_unix_ms.is_none() {
             run.last_success_at_unix_ms = existing.last_success_at_unix_ms;
         }
     }
-    state.target_runs.insert(target_name.to_string(), run);
+    state.target_runs.insert(state_key.to_string(), run);
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }

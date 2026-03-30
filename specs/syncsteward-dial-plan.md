@@ -23,6 +23,7 @@
 - scaffold a real SyncSteward config from the current target recommendations
 - classify folders as two-way, backup-only, excluded, or hold
 - add explicit managed subtargets so curated paths can run safely while broad parent folders remain on hold
+- assign durable IDs to managed targets as groundwork for relocate/adopt workflows
 - explain effective mode and blockers per target before any selective re-enablement
 - protect live SQLite database files and sidecars with backup-only defaults unless explicitly overridden
 - protect native Apple media library bundles with target-specific exclusions inside executable backup-only targets
@@ -32,6 +33,7 @@
 - record per-target last outcome in state and audit
 - allow folder-scoped rebaseline instead of broad `--resync`
 - add quarantine handling for conflict and `safeBackup` artifacts
+- design and implement relocate/adopt flows for managed targets whose root paths move
 
 ## Phase 4: Monitoring and Alerts
 

@@ -2,6 +2,7 @@ use anyhow::{Context, Result, bail};
 use dirs::home_dir;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -47,6 +48,8 @@ pub struct ScanConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ManagedTarget {
+    #[serde(default)]
+    pub target_id: Option<String>,
     pub name: String,
     pub local_path: PathBuf,
     pub remote_path: String,
@@ -368,6 +371,7 @@ fn normalize_config(mut config: AppConfig) -> Result<AppConfig> {
         .managed_targets
         .iter()
         .map(|target| ManagedTarget {
+            target_id: normalize_optional_value(target.target_id.as_deref()),
             name: target.name.clone(),
             local_path: expand_path(&target.local_path),
             remote_path: target.remote_path.clone(),
@@ -407,11 +411,24 @@ fn normalize_config(mut config: AppConfig) -> Result<AppConfig> {
         bail!("remote.ssh_user must not be empty");
     }
     for target in &config.managed_targets {
+        if let Some(target_id) = &target.target_id {
+            if target_id.trim().is_empty() {
+                bail!("managed_targets.target_id must not be empty when provided");
+            }
+        }
         if target.name.trim().is_empty() {
             bail!("managed_targets.name must not be empty");
         }
         if target.remote_path.trim().is_empty() {
             bail!("managed_targets.remote_path must not be empty");
+        }
+    }
+    let mut managed_target_ids = BTreeSet::new();
+    for target in &config.managed_targets {
+        if let Some(target_id) = &target.target_id {
+            if !managed_target_ids.insert(target_id.clone()) {
+                bail!("managed_targets.target_id must be unique: {target_id}");
+            }
         }
     }
     if config.remote.preferred_hosts.is_empty() {
@@ -443,9 +460,16 @@ pub fn expand_path(path: &Path) -> PathBuf {
     path.to_path_buf()
 }
 
+fn normalize_optional_value(value: Option<&str>) -> Option<String> {
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{FileClass, PolicyConfig, PolicyMode, expand_path};
+    use super::{FileClass, ManagedTarget, PolicyConfig, PolicyMode, expand_path, normalize_optional_value};
     use std::path::{Path, PathBuf};
 
     #[test]
@@ -536,5 +560,26 @@ mod tests {
                 .iter()
                 .any(|path| path == Path::new("vault.db"))
         );
+    }
+
+    #[test]
+    fn normalize_optional_value_trims_and_drops_blank_values() {
+        assert_eq!(normalize_optional_value(Some(" abc ")), Some("abc".to_string()));
+        assert_eq!(normalize_optional_value(Some("   ")), None);
+        assert_eq!(normalize_optional_value(None), None);
+    }
+
+    #[test]
+    fn managed_target_can_carry_an_optional_target_id() {
+        let target = ManagedTarget {
+            target_id: Some("target-123".to_string()),
+            name: "Notes/Personal".to_string(),
+            local_path: PathBuf::from("/tmp/notes"),
+            remote_path: "OneDrive/Notes/Personal".to_string(),
+            mode: PolicyMode::BackupOnly,
+            rationale: None,
+        };
+
+        assert_eq!(target.target_id.as_deref(), Some("target-123"));
     }
 }

@@ -2,8 +2,9 @@ use crate::config::{AppConfig, FolderPolicy, default_config_path, expand_path, l
 use crate::inventory::build_target_inventory;
 use crate::model::{
     ActionOutcome, ActionStep, ActionStepStatus, ActionTarget, AlertRecord, AlertReport,
-    AlertSeverity, ArtifactReport, CheckStatus, ConfigScaffoldReport, ControlAction, ControlReport,
-    LaunchAgentStatus, LogAcknowledgeReport, LogSummary, NotifyAlertsReport, PolicySummary,
+    AlertSeverity, ArtifactReport, CheckStatus, ConfigScaffoldReport, ControlAction,
+    ControlReport, EnsureTargetIdsReport, LaunchAgentStatus, LogAcknowledgeReport, LogSummary,
+    ManagedTargetIdAssignment, ManagedTargetIdAssignmentReason, NotifyAlertsReport, PolicySummary,
     PreflightCheck, PreflightReport, RemoteStatus, ServiceState, StatusReport, TargetBlocker,
     TargetCheckReport, TargetCheckSetReport, TargetEvaluation, TargetRunReport,
 };
@@ -17,6 +18,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
+use uuid::Uuid;
 use walkdir::{DirEntry, WalkDir};
 
 pub fn status(config_path: Option<&Path>) -> Result<StatusReport> {
@@ -467,6 +469,91 @@ pub fn scaffold_config(config_path: Option<&Path>, force: bool) -> Result<Config
     })
 }
 
+pub fn ensure_target_ids(config_path: Option<&Path>) -> Result<EnsureTargetIdsReport> {
+    let output_path = config_path.map(expand_path).unwrap_or_else(default_config_path);
+    if !output_path.exists() {
+        return Err(anyhow!(
+            "config does not exist at {} (create or scaffold it first)",
+            output_path.display()
+        ));
+    }
+
+    let raw = fs::read_to_string(&output_path)?;
+    let mut config: AppConfig = toml::from_str(&raw)?;
+
+    if config.managed_targets.is_empty() {
+        return Ok(EnsureTargetIdsReport {
+            outcome: ActionOutcome::NoOp,
+            summary: "no managed targets are configured".to_string(),
+            path: output_path,
+            assigned_count: 0,
+            preserved_count: 0,
+            assignments: Vec::new(),
+        });
+    }
+
+    let mut seen = std::collections::BTreeSet::new();
+    let mut assignments = Vec::new();
+    let mut preserved_count = 0usize;
+
+    for target in &mut config.managed_targets {
+        let normalized = target
+            .target_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned);
+
+        let reason = match &normalized {
+            Some(target_id) if seen.insert(target_id.clone()) => {
+                target.target_id = Some(target_id.clone());
+                preserved_count += 1;
+                None
+            }
+            Some(_) => Some(ManagedTargetIdAssignmentReason::Duplicate),
+            None => Some(ManagedTargetIdAssignmentReason::Missing),
+        };
+
+        if let Some(reason) = reason {
+            let target_id = Uuid::now_v7().to_string();
+            seen.insert(target_id.clone());
+            target.target_id = Some(target_id.clone());
+            assignments.push(ManagedTargetIdAssignment {
+                target_name: target.name.clone(),
+                target_id,
+                reason,
+            });
+        }
+    }
+
+    if assignments.is_empty() {
+        return Ok(EnsureTargetIdsReport {
+            outcome: ActionOutcome::NoOp,
+            summary: "all managed targets already have unique IDs".to_string(),
+            path: output_path,
+            assigned_count: 0,
+            preserved_count,
+            assignments,
+        });
+    }
+
+    let encoded = toml::to_string_pretty(&config)?;
+    fs::write(&output_path, encoded)?;
+
+    Ok(EnsureTargetIdsReport {
+        outcome: ActionOutcome::Success,
+        summary: format!(
+            "assigned {} managed target IDs in {}",
+            assignments.len(),
+            output_path.display()
+        ),
+        path: output_path,
+        assigned_count: assignments.len(),
+        preserved_count,
+        assignments,
+    })
+}
+
 fn collect_status(config: &AppConfig, config_source: String) -> StatusReport {
     let acknowledged_log = load_state(&config.state_path)
         .ok()
@@ -705,7 +792,7 @@ fn evaluate_alerts(config: &AppConfig, config_source: String) -> Result<AlertRep
             continue;
         }
 
-        let Some(run_state) = state.target_runs.get(&evaluation.target.name) else {
+        let Some(run_state) = lookup_target_run_state(&state, &evaluation.target) else {
             alerts.push(AlertRecord {
                 id: format!("target_{}_never_ran", evaluation.target.name),
                 severity: AlertSeverity::Warn,
@@ -1440,6 +1527,7 @@ fn record_target_run(config: &AppConfig, report: &TargetRunReport) {
 
     let state = TargetRunState {
         target_name: report.evaluation.target.name.clone(),
+        target_id: report.evaluation.target.target_id.clone(),
         local_path: report.evaluation.target.local_path.clone(),
         effective_mode: report.evaluation.effective_mode,
         outcome: report.outcome,
@@ -1453,9 +1541,30 @@ fn record_target_run(config: &AppConfig, report: &TargetRunReport) {
         summary: report.summary.clone(),
     };
 
-    if let Err(error) = save_target_run(&config.state_path, &report.evaluation.target.name, state) {
+    let state_key = target_state_key(&report.evaluation.target);
+    if let Err(error) = save_target_run(&config.state_path, &state_key, state) {
         eprintln!("syncsteward: failed to record target run state: {error}");
     }
+}
+
+fn target_state_key(target: &crate::model::SyncTargetRecord) -> String {
+    target
+        .target_id
+        .clone()
+        .unwrap_or_else(|| target.name.clone())
+}
+
+fn lookup_target_run_state<'a>(
+    state: &'a crate::state::AppState,
+    target: &crate::model::SyncTargetRecord,
+) -> Option<&'a TargetRunState> {
+    if let Some(target_id) = &target.target_id {
+        if let Some(run_state) = state.target_runs.get(target_id) {
+            return Some(run_state);
+        }
+    }
+
+    state.target_runs.get(&target.name)
 }
 
 fn append_audit_record(path: &Path, report: &ControlReport) -> Result<()> {
@@ -2185,15 +2294,17 @@ impl ActionTarget {
 #[cfg(test)]
 mod tests {
     use super::{
-        ActionOutcome, ActionStepStatus, analyze_log_contents, evaluate_preflight,
-        summarize_outcome,
+        ActionOutcome, ActionStepStatus, analyze_log_contents, ensure_target_ids,
+        evaluate_preflight, summarize_outcome, target_state_key,
     };
-    use crate::config::PolicyConfig;
+    use crate::config::{AppConfig, ManagedTarget, PolicyConfig, PolicyMode, load_config};
     use crate::model::{
         AcknowledgedLogSummary, ActionStep, ArtifactReport, CheckStatus, LaunchAgentStatus,
-        PolicySummary, RemoteStatus, ServiceState, StatusReport,
+        PolicySummary, RemoteStatus, ServiceState, StatusReport, SyncTargetRecord,
     };
+    use std::fs;
     use std::path::PathBuf;
+    use uuid::Uuid;
 
     #[test]
     fn log_analysis_counts_expected_markers() {
@@ -2309,5 +2420,73 @@ path1 and path2 are out of sync, run --resync to recover\n\
             .find(|check| check.id == "latest_log_clean")
             .expect("latest_log_clean");
         assert_eq!(check.status, CheckStatus::Warn);
+    }
+
+    #[test]
+    fn target_state_key_prefers_target_id_when_present() {
+        let with_id = SyncTargetRecord {
+            target_id: Some("target-123".to_string()),
+            name: "Notes/Personal".to_string(),
+            local_path: PathBuf::from("/tmp/notes"),
+            remote_path: "OneDrive/Notes/Personal".to_string(),
+            legacy_mode: crate::model::LegacySyncMode::Managed,
+            recommended_mode: PolicyMode::BackupOnly,
+            configured_mode: Some(PolicyMode::BackupOnly),
+            rationale: "test".to_string(),
+        };
+        let without_id = SyncTargetRecord {
+            target_id: None,
+            name: "Notes/Personal".to_string(),
+            local_path: PathBuf::from("/tmp/notes"),
+            remote_path: "OneDrive/Notes/Personal".to_string(),
+            legacy_mode: crate::model::LegacySyncMode::Managed,
+            recommended_mode: PolicyMode::BackupOnly,
+            configured_mode: Some(PolicyMode::BackupOnly),
+            rationale: "test".to_string(),
+        };
+
+        assert_eq!(target_state_key(&with_id), "target-123");
+        assert_eq!(target_state_key(&without_id), "Notes/Personal");
+    }
+
+    #[test]
+    fn ensure_target_ids_assigns_missing_ids() {
+        let temp_path = std::env::temp_dir().join(format!("syncsteward-test-{}.toml", Uuid::now_v7()));
+        let mut config = AppConfig::default();
+        config.managed_targets = vec![
+            ManagedTarget {
+                target_id: None,
+                name: "Notes/Personal".to_string(),
+                local_path: PathBuf::from("~/Notes/Personal"),
+                remote_path: "OneDrive/Notes/Personal".to_string(),
+                mode: PolicyMode::BackupOnly,
+                rationale: None,
+            },
+            ManagedTarget {
+                target_id: None,
+                name: "Notes/Business".to_string(),
+                local_path: PathBuf::from("~/Notes/Business"),
+                remote_path: "OneDrive/Notes/Business".to_string(),
+                mode: PolicyMode::BackupOnly,
+                rationale: None,
+            },
+        ];
+        fs::write(&temp_path, toml::to_string_pretty(&config).expect("serialize config")).expect("write config");
+
+        let report = ensure_target_ids(Some(temp_path.as_path())).expect("ensure target ids");
+        assert_eq!(report.outcome, ActionOutcome::Success);
+        assert_eq!(report.assigned_count, 2);
+
+        let loaded = load_config(Some(temp_path.as_path())).expect("load config");
+        let ids: Vec<_> = loaded
+            .config
+            .managed_targets
+            .iter()
+            .map(|target| target.target_id.clone().expect("target id"))
+            .collect();
+        assert_eq!(ids.len(), 2);
+        assert_ne!(ids[0], ids[1]);
+
+        let _ = fs::remove_file(temp_path);
     }
 }

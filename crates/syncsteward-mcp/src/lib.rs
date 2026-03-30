@@ -10,12 +10,13 @@ use serde::Deserialize;
 use std::path::PathBuf;
 use syncsteward_core::{
     ActionTarget, AlertReport, ConfigScaffoldReport, ControlReport, LogAcknowledgeReport,
-    NotifyAlertsReport, PreflightReport, StatusReport, SyncTargetInventoryReport,
-    TargetCheckReport, TargetCheckSetReport, TargetRunReport,
+    EnsureTargetIdsReport, NotifyAlertsReport, PreflightReport, StatusReport,
+    SyncTargetInventoryReport, TargetCheckReport, TargetCheckSetReport, TargetRunReport,
     acknowledge_latest_log as core_acknowledge_latest_log, alerts as core_alerts,
     check_target as core_check_target, check_targets as core_check_targets,
-    notify_alerts as core_notify_alerts, pause, preflight, resume, run_target as core_run_target,
-    scaffold_config as core_scaffold_config, status, targets,
+    ensure_target_ids as core_ensure_target_ids, notify_alerts as core_notify_alerts, pause,
+    preflight, resume, run_target as core_run_target, scaffold_config as core_scaffold_config,
+    status, targets,
 };
 
 type McpResult<T> = Result<Json<T>, String>;
@@ -214,6 +215,20 @@ impl SyncStewardMcpServer {
                 .await
                 .map_err(|error| error.to_string())?
                 .map_err(|error| error.to_string())?;
+        Ok(Json(report))
+    }
+
+    #[tool(
+        description = "Assign stable IDs to managed targets in the SyncSteward config file so future relocate/adopt workflows can recognize the same target after root-path moves."
+    )]
+    async fn ensure_target_ids(&self) -> McpResult<EnsureTargetIdsReport> {
+        let config_path = self.config_path.clone();
+        let report = tokio::task::spawn_blocking(move || {
+            core_ensure_target_ids(config_path.as_deref())
+        })
+        .await
+        .map_err(|error| error.to_string())?
+        .map_err(|error| error.to_string())?;
         Ok(Json(report))
     }
 

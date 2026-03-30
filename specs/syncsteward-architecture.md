@@ -25,6 +25,7 @@ The app is responsible for:
 - inventorying the current legacy sync targets before any re-enablement plan is applied
 - turning recommended target policies into an explicit managed config
 - explaining readiness and blockers per target before any selective re-enablement
+- assigning durable IDs to managed targets as groundwork for future relocate/adopt workflows
 - notifications and failure escalation
 - future folder policy management and controlled re-enablement
 
@@ -65,7 +66,7 @@ Configuration now carries both operator paths and safety policy:
 - launch agent and remote service locations
 - log, audit-log, state, filter, and legacy-lock paths
 - scan roots
-- explicitly managed targets with local path, remote path, mode, and rationale
+- explicitly managed targets with durable ID, local path, remote path, mode, and rationale
 - folder policy overrides
 - file-class policy defaults
 - target-specific exclusion rules for protected bundles and subtrees
@@ -89,6 +90,7 @@ SyncSteward is folder-first, with file-class overrides for dangerous content.
 
 - folder policies express the normal behavior for a subtree
 - managed targets define explicit curated paths that should participate in execution even when a broader parent folder remains on hold
+- managed targets should carry durable identity so future relocate/adopt flows can reconnect the same target after its root path moves
 - file-class policies can tighten safety for specific artifacts
 - target-specific exclusions can protect known bundle/package paths inside otherwise executable targets
 - target-specific snapshots can replace live runtime databases with staged SQLite backups during execution
@@ -138,6 +140,11 @@ Those managed targets exist for the transition period where:
 
 The first practical example is a held top-level `Notes` folder with a separately managed `Notes/Personal` backup-only target.
 
+Each managed target should also be able to carry a durable ID. That identity is what allows SyncSteward to distinguish:
+
+- normal file and folder moves inside the target root, which should sync naturally
+- a move of the target root itself, which should trigger an explicit relocate/adopt workflow instead of being treated as unrelated deletes and uploads
+
 It should also expose a target-scoped readiness view so an operator can see:
 
 - the effective mode after configured overrides are applied
@@ -176,6 +183,7 @@ The next execution layer is also explicit and fail-safe:
 - executable targets may come from either the legacy script inventory or explicit managed-target config
 - execution must respect the legacy sync lock so manual runs cannot overlap the old script
 - every target run should append audit history and record last outcome in state
+- future relocate/adopt commands should use managed target IDs instead of path-only matching when reconnecting moved target roots
 
 Monitoring should build on the same state model rather than inventing a separate tracker:
 
@@ -188,6 +196,6 @@ Monitoring should build on the same state model rather than inventing a separate
 
 1. Health and preflight inspection
 2. Coordinated pause/resume and structured audit logging
-3. Per-folder sync policy, managed subtargets, config scaffolding, file-class overrides, and quarantine management
+3. Per-folder sync policy, managed subtargets, durable target IDs, config scaffolding, file-class overrides, and quarantine management
 4. Notifications and escalation
 5. Menu bar UI and operator workflow polish

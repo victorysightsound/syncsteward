@@ -24,6 +24,7 @@ SyncSteward does not restart sync automatically. The current build exposes:
 - snapshot-backed handling for runtime SQLite targets like `.memloft`
 - target inventory from the current `cloud-sync.sh` with safer recommended policies
 - explicitly managed subtargets that can be backed up safely while their broad parent folder stays on hold
+- durable managed-target IDs as the first foundation for future relocate/adopt workflows
 - explicit acknowledgement of a historical incident log after cleanup
 - config scaffolding so recommended folder policies become a real SyncSteward config file
 - target-scoped readiness and blocker reports before any selective re-enablement
@@ -71,6 +72,8 @@ Managed targets participate in:
 - dry-run and live `run-target` execution
 - alerting, audit, and state history
 
+Managed targets can also carry stable IDs now. That is the first foundation for a future relocate/adopt workflow, where SyncSteward can recognize the same managed target after its root path moves instead of treating it as a brand-new target with unrelated deletes.
+
 ## Commands
 
 ```bash
@@ -85,6 +88,7 @@ cargo run -p syncsteward-cli -- alerts
 cargo run -p syncsteward-cli -- notify-alerts --dry-run
 cargo run -p syncsteward-cli -- acknowledge-latest-log
 cargo run -p syncsteward-cli -- scaffold-config
+cargo run -p syncsteward-cli -- ensure-target-ids
 cargo run -p syncsteward-cli -- pause --target all
 cargo run -p syncsteward-cli -- resume --target all
 cargo run -p syncsteward-cli -- status --json

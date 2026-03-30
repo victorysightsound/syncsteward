@@ -34,6 +34,7 @@ pub(crate) fn build_target_inventory(
         let (recommended_mode, rationale) =
             recommend_policy(&folder, LegacySyncMode::Bisync, &local_path);
         targets.push(SyncTargetRecord {
+            target_id: None,
             name: folder.clone(),
             local_path: local_path.clone(),
             remote_path: format!("OneDrive/{}", folder),
@@ -56,6 +57,7 @@ pub(crate) fn build_target_inventory(
         let (recommended_mode, rationale) =
             recommend_policy(local_name, LegacySyncMode::BackupOneWay, &local_path);
         targets.push(SyncTargetRecord {
+            target_id: None,
             name: local_name.to_string(),
             local_path: local_path.clone(),
             remote_path: format!("OneDrive/{}", remote_name),
@@ -68,6 +70,7 @@ pub(crate) fn build_target_inventory(
 
     for managed in &config.managed_targets {
         targets.push(SyncTargetRecord {
+            target_id: managed.target_id.clone(),
             name: managed.name.clone(),
             local_path: managed.local_path.clone(),
             remote_path: managed.remote_path.clone(),

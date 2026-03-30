@@ -58,6 +58,7 @@ Outputs:
 
 - script path
 - combined target list
+- stable target ID for each managed target when configured
 - local and remote path for each target
 - legacy mode (`bisync`, one-way backup, or managed target)
 - recommended SyncSteward policy
@@ -78,6 +79,7 @@ Outputs:
 - overall preflight readiness
 - one evaluation per target
 - includes explicit managed targets even when their parent legacy folder is still on hold
+- includes the stable managed-target ID when present
 - effective mode after configured overrides are applied
 - blocker details for hold, excluded, missing-path, and global preflight failures
 
@@ -95,8 +97,32 @@ Outputs:
 - overall preflight readiness
 - one target evaluation
 - supports both legacy targets and explicit managed targets
+- includes the stable managed-target ID when present
 - effective mode after configured overrides are applied
 - blocker details for hold, excluded, missing-path, and global preflight failures
+
+Supports:
+
+- human output
+- JSON output
+
+### `syncsteward ensure-target-ids`
+
+Assign stable IDs to managed targets in the SyncSteward config file.
+
+Outputs:
+
+- config path
+- assigned ID count
+- preserved ID count
+- one assignment record per target that needed a new ID
+
+Rules:
+
+- only writes when managed targets exist and at least one ID is missing or duplicated
+- keeps existing unique IDs unchanged
+- repairs duplicate managed-target IDs by assigning a fresh ID to the later conflicting target
+- creates the identity layer needed for future relocate/adopt workflows
 
 Supports:
 
@@ -302,6 +328,10 @@ Record the same historical-log baseline acknowledgement exposed by the CLI.
 
 Write the same config scaffold exposed by the CLI, with a separate force-overwrite variant for MCP.
 
+### `ensure_target_ids`
+
+Assign the same stable managed-target IDs exposed by the CLI.
+
 ### `pause_all`, `pause_local`, `pause_remote`
 
 Run the same coordinated pause actions exposed by the CLI.
@@ -316,4 +346,5 @@ Deferred for later waves:
 
 - folder policy editing
 - conflict quarantine moves
+- managed target relocate/adopt
 - UI
