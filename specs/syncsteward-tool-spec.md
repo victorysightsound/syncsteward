@@ -229,6 +229,8 @@ Rules:
 - supports explicit managed targets so curated subfolders can run while broader legacy folders remain on hold
 - merges target-specific exclusion rules into the temporary filter set for the active run
 - uses target-specific snapshot rules when a runtime target should upload SQLite backups instead of the live database files
+- target snapshot rules are selective: they exclude and replace only the listed live database files while other database files in the same target continue through normal backup-only sync
+- excludes SQLite sidecars like `*-wal`, `*-shm`, and `*-journal` from direct sync
 - records last live target outcome in SyncSteward state
 - does not let dry-run validation overwrite the live target state used by alerts
 - appends a target-run audit record

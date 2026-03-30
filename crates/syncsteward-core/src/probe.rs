@@ -2246,7 +2246,19 @@ fn execute_backup_only_target(
         .arg("--exclude")
         .arg("*.db-wal")
         .arg("--exclude")
-        .arg("*.db-shm");
+        .arg("*.db-shm")
+        .arg("--exclude")
+        .arg("*.sqlite-journal")
+        .arg("--exclude")
+        .arg("*.sqlite-wal")
+        .arg("--exclude")
+        .arg("*.sqlite-shm")
+        .arg("--exclude")
+        .arg("*.sqlite3-journal")
+        .arg("--exclude")
+        .arg("*.sqlite3-wal")
+        .arg("--exclude")
+        .arg("*.sqlite3-shm");
     if dry_run {
         command.arg("--dry-run");
     }
@@ -2331,12 +2343,6 @@ fn execute_snapshot_backup_target(
         .arg(&filter_path)
         .arg("--skip-links")
         .arg("--exclude")
-        .arg("*.db")
-        .arg("--exclude")
-        .arg("*.sqlite")
-        .arg("--exclude")
-        .arg("*.sqlite3")
-        .arg("--exclude")
         .arg("*.db-journal")
         .arg("--exclude")
         .arg("*.db-wal")
@@ -2354,6 +2360,9 @@ fn execute_snapshot_backup_target(
         .arg("*.sqlite3-wal")
         .arg("--exclude")
         .arg("*.sqlite3-shm");
+    for pattern in snapshot_exclusion_patterns(snapshot_policy) {
+        command.arg("--exclude").arg(pattern);
+    }
     if dry_run {
         command.arg("--dry-run");
     }
@@ -2483,6 +2492,21 @@ fn execute_snapshot_backup_target(
     }
 
     Ok(())
+}
+
+fn snapshot_exclusion_patterns(snapshot_policy: &crate::config::TargetSnapshot) -> Vec<String> {
+    let mut patterns = std::collections::BTreeSet::new();
+    for relative_path in &snapshot_policy.sqlite_paths {
+        let normalized = relative_path.to_string_lossy().replace('\\', "/");
+        if normalized.is_empty() {
+            continue;
+        }
+        patterns.insert(normalized.clone());
+        patterns.insert(format!("{normalized}-journal"));
+        patterns.insert(format!("{normalized}-wal"));
+        patterns.insert(format!("{normalized}-shm"));
+    }
+    patterns.into_iter().collect()
 }
 
 fn write_target_rclone_config(config: &AppConfig, host: &str, temp_dir: &Path) -> Result<PathBuf> {
@@ -4173,6 +4197,29 @@ path1 and path2 are out of sync, run --resync to recover\n\
 
         assert_eq!(target_state_key(&with_id), "target-123");
         assert_eq!(target_state_key(&without_id), "Notes/Personal");
+    }
+
+    #[test]
+    fn snapshot_exclusion_patterns_only_cover_listed_sqlite_paths() {
+        let snapshot = crate::config::TargetSnapshot {
+            target: "Books".to_string(),
+            sqlite_paths: vec![
+                PathBuf::from("e-Books/librona.db"),
+                PathBuf::from("e-Books/.docs/workspace.db"),
+            ],
+            rationale: None,
+        };
+
+        let patterns = super::snapshot_exclusion_patterns(&snapshot);
+
+        assert!(patterns.contains(&"e-Books/librona.db".to_string()));
+        assert!(patterns.contains(&"e-Books/librona.db-wal".to_string()));
+        assert!(patterns.contains(&"e-Books/librona.db-shm".to_string()));
+        assert!(patterns.contains(&"e-Books/librona.db-journal".to_string()));
+        assert!(patterns.contains(&"e-Books/.docs/workspace.db".to_string()));
+        assert_eq!(patterns.len(), 8);
+        assert!(!patterns.contains(&"*.db".to_string()));
+        assert!(!patterns.contains(&"*.sqlite".to_string()));
     }
 
     #[test]

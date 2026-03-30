@@ -119,6 +119,8 @@ The first target-specific snapshot rule protects `.memloft`:
 
 - SyncSteward syncs non-database files from the live tree through the existing filtered path
 - `memloft.db`, `payroll.db`, and `vault.db` are uploaded from `sqlite3 .backup` snapshots instead of the live files
+- snapshot rules are selective: they replace only the listed live database files, while other database files in the same target still follow normal backup-only file sync
+- SQLite sidecars like `*-wal`, `*-shm`, and `*-journal` remain excluded globally from direct sync
 
 That keeps runtime SQLite backup coherent without forcing a full local mirror of the `.memloft` tree on every run.
 

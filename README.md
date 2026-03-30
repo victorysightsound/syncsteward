@@ -116,6 +116,7 @@ SyncSteward now treats `.memloft` as a snapshot-backed runtime target:
 
 - ordinary non-database files still flow through the filtered backup-only sync path
 - `memloft.db`, `payroll.db`, and `vault.db` are uploaded from `sqlite3 .backup` snapshots created in temp space
+- snapshot rules now protect only the named live database files; other database files in the same target still back up normally, while SQLite sidecars remain excluded globally
 
 That preserves live SQLite consistency without requiring the whole runtime tree to be staged locally before every backup.
 
