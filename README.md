@@ -57,8 +57,10 @@ The current shell is intentionally small:
 
 - SwiftUI menu bar app
 - reads `syncsteward-cli overview --json`
-- shows preflight, runner, approved-target, recent-run, and alert state
-- opens the live config and state folder
+- reads `syncsteward-cli runner-agent-status --json` for launchd visibility
+- shows preflight, runner, runner-agent, approved-target, recent-run, and alert state
+- exposes a guarded `runner-tick --dry-run` operator action
+- opens the live config, state folder, runner logs, and audit log
 - does not introduce any new sync logic
 
 It resolves the CLI in this order:

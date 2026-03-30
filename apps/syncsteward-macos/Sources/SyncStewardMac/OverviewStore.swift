@@ -5,12 +5,18 @@ import SwiftUI
 @MainActor
 final class OverviewStore: ObservableObject {
     @Published private(set) var overview: OverviewPayload?
+    @Published private(set) var runnerAgentStatus: LaunchAgentStatusPayload?
     @Published private(set) var errorMessage: String?
+    @Published private(set) var actionFeedback: ActionFeedback?
     @Published private(set) var isLoading = false
+    @Published private(set) var isPerformingAction = false
     @Published private(set) var lastRefreshDate: Date?
 
     let configPath = URL(fileURLWithPath: NSHomeDirectory()).appending(path: ".config/syncsteward/config.toml")
     let stateFolderURL = URL(fileURLWithPath: NSHomeDirectory()).appending(path: ".local/state/syncsteward")
+    let runnerStdoutURL = URL(fileURLWithPath: NSHomeDirectory()).appending(path: ".local/state/syncsteward/runner.stdout.log")
+    let runnerStderrURL = URL(fileURLWithPath: NSHomeDirectory()).appending(path: ".local/state/syncsteward/runner.stderr.log")
+    let auditLogURL = URL(fileURLWithPath: NSHomeDirectory()).appending(path: ".local/state/syncsteward/audit.jsonl")
 
     private let refreshInterval: TimeInterval = 60
     private var refreshTimer: Timer?
@@ -79,8 +85,18 @@ final class OverviewStore: ObservableObject {
         defer { isLoading = false }
 
         do {
-            let overview = try cli.fetchOverview()
+            let cli = self.cli
+            let overviewTask = Task.detached(priority: .userInitiated) {
+                try cli.fetchOverview()
+            }
+            let runnerTask = Task.detached(priority: .utility) {
+                try cli.fetchRunnerAgentStatus()
+            }
+
+            let overview = try await overviewTask.value
+            let runnerAgentStatus = try? await runnerTask.value
             self.overview = overview
+            self.runnerAgentStatus = runnerAgentStatus
             self.errorMessage = nil
             self.lastRefreshDate = Date()
         } catch {
@@ -95,20 +111,64 @@ final class OverviewStore: ObservableObject {
     func openStateFolder() {
         NSWorkspace.shared.activateFileViewerSelecting([stateFolderURL])
     }
+
+    func openRunnerLogs() {
+        NSWorkspace.shared.activateFileViewerSelecting([runnerStdoutURL, runnerStderrURL])
+    }
+
+    func openAuditLog() {
+        NSWorkspace.shared.open(auditLogURL)
+    }
+
+    func runDryRunTick() async {
+        await performAction(title: "Dry-run tick complete") { cli in
+            try cli.runDryRunTick()
+        }
+    }
+
+    private func performAction(
+        title: String,
+        operation: @escaping @Sendable (SyncStewardCLI) throws -> RunnerTickActionPayload
+    ) async {
+        isPerformingAction = true
+        defer { isPerformingAction = false }
+
+        do {
+            let cli = self.cli
+            let payload = try await Task.detached(priority: .userInitiated) {
+                try operation(cli)
+            }.value
+            actionFeedback = ActionFeedback(
+                title: title,
+                message: payload.summary,
+                tone: payload.outcome == .failed ? .error : .info
+            )
+            await refresh()
+        } catch {
+            actionFeedback = ActionFeedback(
+                title: "Operator action failed",
+                message: error.localizedDescription,
+                tone: .error
+            )
+        }
+    }
 }
 
-struct SyncStewardCLI {
-    private let fileManager = FileManager.default
-
+struct SyncStewardCLI: Sendable {
     var displayPath: String {
         resolvedCommandDescription()
     }
 
     func fetchOverview() throws -> OverviewPayload {
-        let result = try run(arguments: ["overview", "--json"])
-        let decoder = JSONDecoder()
-        decoder.keyDecodingStrategy = .convertFromSnakeCase
-        return try decoder.decode(OverviewPayload.self, from: result)
+        try decode(OverviewPayload.self, arguments: ["overview", "--json"])
+    }
+
+    func fetchRunnerAgentStatus() throws -> LaunchAgentStatusPayload {
+        try decode(RunnerAgentStatusEnvelope.self, arguments: ["runner-agent-status", "--json"]).status
+    }
+
+    func runDryRunTick() throws -> RunnerTickActionPayload {
+        try decode(RunnerTickActionPayload.self, arguments: ["runner-tick", "--dry-run", "--json"])
     }
 
     private func run(arguments: [String]) throws -> Data {
@@ -141,7 +201,25 @@ struct SyncStewardCLI {
         return output
     }
 
+    private func decode<T: Decodable>(_ type: T.Type, arguments: [String]) throws -> T {
+        let result = try run(arguments: arguments)
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+
+        do {
+            return try decoder.decode(T.self, from: result)
+        } catch {
+            let preview = outputPreview(for: result)
+            throw SyncStewardCLIError.decodeFailed(
+                command: commandDescription(arguments: arguments),
+                message: error.localizedDescription,
+                preview: preview
+            )
+        }
+    }
+
     private func resolvedCLIExecutablePath() -> String? {
+        let fileManager = FileManager.default
         let candidates = [
             ProcessInfo.processInfo.environment["SYNCSTEWARD_CLI_PATH"],
             "\(NSHomeDirectory())/projects/syncsteward/target/debug/syncsteward-cli",
@@ -155,15 +233,49 @@ struct SyncStewardCLI {
     private func resolvedCommandDescription() -> String {
         resolvedCLIExecutablePath() ?? "syncsteward-cli (from PATH)"
     }
+
+    private func commandDescription(arguments: [String]) -> String {
+        ([resolvedCommandDescription()] + arguments).joined(separator: " ")
+    }
+
+    private func outputPreview(for data: Data) -> String {
+        let raw = String(data: data, encoding: .utf8)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let text = raw?.isEmpty == false ? raw! : "<empty output>"
+        return String(text.prefix(320))
+    }
 }
 
 enum SyncStewardCLIError: LocalizedError {
     case commandFailed(message: String)
+    case decodeFailed(command: String, message: String, preview: String)
 
     var errorDescription: String? {
         switch self {
         case .commandFailed(let message):
             return message
+        case .decodeFailed(let command, let message, let preview):
+            return "Could not decode SyncSteward output from `\(command)`: \(message)\nOutput preview: \(preview)"
+        }
+    }
+}
+
+struct ActionFeedback {
+    let title: String
+    let message: String
+    let tone: FeedbackTone
+}
+
+enum FeedbackTone {
+    case info
+    case error
+
+    var color: Color {
+        switch self {
+        case .info:
+            return .blue
+        case .error:
+            return .red
         }
     }
 }

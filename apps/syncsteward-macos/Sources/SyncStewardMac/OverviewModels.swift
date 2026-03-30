@@ -105,6 +105,62 @@ struct AlertRecordPayload: Decodable {
     let detail: String
 }
 
+struct RunnerAgentStatusEnvelope: Decodable {
+    let configSource: String
+    let status: LaunchAgentStatusPayload
+}
+
+struct LaunchAgentStatusPayload: Decodable {
+    let label: String
+    let plistPath: String
+    let installed: Bool
+    let loaded: Bool
+    let running: Bool
+    let detail: String
+
+    var stateLabel: String {
+        if running {
+            return "RUNNING"
+        }
+        if loaded {
+            return "LOADED"
+        }
+        if installed {
+            return "INSTALLED"
+        }
+        return "MISSING"
+    }
+
+    var stateColor: Color {
+        if running {
+            return .green
+        }
+        if loaded {
+            return .blue
+        }
+        if installed {
+            return .orange
+        }
+        return .red
+    }
+
+    var detailLine: String {
+        let trimmed = detail.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty {
+            return plistPath
+        }
+        return trimmed
+    }
+}
+
+struct RunnerTickActionPayload: Decodable {
+    let dryRun: Bool
+    let outcome: OutcomeValue
+    let summary: String
+    let due: Bool
+    let preflightReady: Bool
+}
+
 enum AlertSeverityValue: String, Decodable {
     case info
     case warn

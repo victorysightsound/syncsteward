@@ -206,6 +206,7 @@ Monitoring should build on the same state model rather than inventing a separate
 - one composed overview surface should summarize preflight, runner cadence, approved-target readiness, recent target history, and active alerts for CLI, MCP, and future UI consumers
 - the first native macOS shell should consume that overview contract rather than reimplementing status stitching or sync sequencing
 - the first native macOS shell may be installed as a thin local app bundle wrapper that still launches the current dev-built shell and CLI rather than forking a separate desktop logic path
+- the first native macOS shell should stay inside safe operator boundaries by exposing only refresh, runner-agent visibility, dry-run runner actions, and open-log/config affordances while delegating all real work to CLI and MCP surfaces
 
 The next daemon-ready layer should also stay inside the same guarded model:
 
@@ -232,4 +233,4 @@ The dedicated runner launch agent should:
 2. Coordinated pause/resume and structured audit logging
 3. Per-folder sync policy, managed subtargets, durable target IDs, managed-target lifecycle commands, config scaffolding, file-class overrides, quarantine management, and approved-target execution
 4. Notifications, escalation, and daemon-ready approved-target cycle orchestration
-5. Menu bar UI and operator workflow polish, starting with a native macOS shell that stays read-only apart from safe open/refresh actions and continues to call the shared overview/control surfaces
+5. Menu bar UI and operator workflow polish, starting with a native macOS shell that surfaces overview plus runner status, stays inside safe dry-run/open actions, and continues to call the shared overview/control surfaces

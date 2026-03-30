@@ -36,6 +36,10 @@ struct SyncStewardMenuBarView: View {
             if let overview = store.overview {
                 summaryCards(overview: overview)
 
+                if let runnerAgentStatus = store.runnerAgentStatus {
+                    runnerAgentSection(status: runnerAgentStatus)
+                }
+
                 if !overview.approvedTargets.isEmpty {
                     approvedTargetsSection(overview: overview)
                 }
@@ -60,8 +64,12 @@ struct SyncStewardMenuBarView: View {
                 errorBanner(errorMessage)
             }
 
+            if let actionFeedback = store.actionFeedback {
+                actionBanner(actionFeedback)
+            }
+
             Divider()
-            actionRow
+            actionSection
         }
         .padding(16)
         .task {
@@ -124,6 +132,30 @@ struct SyncStewardMenuBarView: View {
                     tint: overview.targets.readyApprovedTargetCount == overview.targets.approvedTargetCount ? .green : .orange
                 )
             }
+        }
+    }
+
+    private func runnerAgentSection(status: LaunchAgentStatusPayload) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            sectionHeader("Runner Agent")
+            HStack {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(status.label)
+                        .font(.system(size: 12, weight: .semibold, design: .rounded))
+                    Text(status.detailLine)
+                        .font(.system(size: 11, weight: .regular, design: .rounded))
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Text(status.stateLabel)
+                    .font(.system(size: 10, weight: .bold, design: .rounded))
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(status.stateColor.opacity(0.16), in: Capsule())
+                    .foregroundStyle(status.stateColor)
+            }
+            .padding(10)
+            .background(Color(NSColor.controlBackgroundColor), in: RoundedRectangle(cornerRadius: 10))
         }
     }
 
@@ -218,26 +250,63 @@ struct SyncStewardMenuBarView: View {
         .background(Color.red.opacity(0.14), in: RoundedRectangle(cornerRadius: 10))
     }
 
-    private var actionRow: some View {
-        HStack(spacing: 10) {
-            Button("Refresh") {
-                Task {
-                    await store.refresh()
+    private func actionBanner(_ feedback: ActionFeedback) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(feedback.title)
+                .font(.system(size: 12, weight: .semibold, design: .rounded))
+            Text(feedback.message)
+                .font(.system(size: 11, weight: .regular, design: .rounded))
+                .foregroundStyle(.secondary)
+        }
+        .padding(10)
+        .background(feedback.tone.color.opacity(0.14), in: RoundedRectangle(cornerRadius: 10))
+    }
+
+    private var actionSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            sectionHeader("Operator")
+
+            HStack(spacing: 10) {
+                Button(store.isLoading ? "Refreshing..." : "Refresh") {
+                    Task {
+                        await store.refresh()
+                    }
+                }
+                .disabled(store.isLoading || store.isPerformingAction)
+
+                Button(store.isPerformingAction ? "Running..." : "Dry-Run Tick") {
+                    Task {
+                        await store.runDryRunTick()
+                    }
+                }
+                .disabled(store.isLoading || store.isPerformingAction)
+
+                Spacer()
+            }
+
+            HStack(spacing: 10) {
+                Button("Open Config") {
+                    store.openConfig()
+                }
+
+                Button("Open State") {
+                    store.openStateFolder()
+                }
+
+                Button("Open Logs") {
+                    store.openRunnerLogs()
+                }
+
+                Button("Open Audit") {
+                    store.openAuditLog()
                 }
             }
 
-            Button("Open Config") {
-                store.openConfig()
-            }
-
-            Button("Open State") {
-                store.openStateFolder()
-            }
-
-            Spacer()
-
-            Button("Quit") {
-                NSApplication.shared.terminate(nil)
+            HStack {
+                Spacer()
+                Button("Quit") {
+                    NSApplication.shared.terminate(nil)
+                }
             }
         }
     }

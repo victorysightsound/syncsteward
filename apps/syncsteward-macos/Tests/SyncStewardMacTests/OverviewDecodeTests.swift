@@ -86,3 +86,56 @@ func overviewPayloadDecodesSyncStewardOverviewShape() throws {
     #expect(payload.approvedTargets.first?.displayName == ".memloft")
     #expect(payload.recentTargetRuns.first?.outcome == .success)
 }
+
+@Test
+func runnerAgentStatusDecodesSyncStewardShape() throws {
+    let json = #"""
+    {
+      "config_source": "default config /Users/johndeaton/.config/syncsteward/config.toml",
+      "status": {
+        "label": "com.syncsteward.runner",
+        "plist_path": "/Users/johndeaton/Library/LaunchAgents/com.syncsteward.runner.plist",
+        "installed": true,
+        "loaded": true,
+        "running": false,
+        "detail": "-\t1\tcom.syncsteward.runner"
+      }
+    }
+    """#
+
+    let decoder = JSONDecoder()
+    decoder.keyDecodingStrategy = .convertFromSnakeCase
+    let payload = try decoder.decode(RunnerAgentStatusEnvelope.self, from: Data(json.utf8))
+
+    #expect(payload.status.loaded)
+    #expect(payload.status.stateLabel == "LOADED")
+}
+
+@Test
+func runnerTickActionDecodesNoOpShape() throws {
+    let json = #"""
+    {
+      "config_source": "default config /Users/johndeaton/.config/syncsteward/config.toml",
+      "dry_run": true,
+      "outcome": "no_op",
+      "summary": "runner tick skipped cycle because it is not due (0 active alerts)",
+      "due": false,
+      "cycle_interval_minutes": 60,
+      "last_live_cycle_finished_at_unix_ms": 1774839658027,
+      "next_due_at_unix_ms": 1774843258027,
+      "preflight_ready": true,
+      "cycle": null,
+      "alerts": [],
+      "notification": null,
+      "steps": []
+    }
+    """#
+
+    let decoder = JSONDecoder()
+    decoder.keyDecodingStrategy = .convertFromSnakeCase
+    let payload = try decoder.decode(RunnerTickActionPayload.self, from: Data(json.utf8))
+
+    #expect(payload.dryRun)
+    #expect(payload.outcome == .noOp)
+    #expect(payload.preflightReady)
+}
