@@ -78,6 +78,24 @@ pub struct RunnerConfig {
     pub notify_after_cycle: bool,
     #[serde(default = "default_notify_after_tick")]
     pub notify_after_tick: bool,
+    #[serde(default)]
+    pub launch_agent: RunnerLaunchAgentConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct RunnerLaunchAgentConfig {
+    #[serde(default = "default_runner_launch_agent_label")]
+    pub label: String,
+    #[serde(default = "default_runner_launch_agent_path")]
+    pub plist_path: PathBuf,
+    #[serde(default = "default_runner_launch_agent_interval_minutes")]
+    pub tick_interval_minutes: u64,
+    #[serde(default = "default_runner_launch_agent_stdout_path")]
+    pub stdout_path: PathBuf,
+    #[serde(default = "default_runner_launch_agent_stderr_path")]
+    pub stderr_path: PathBuf,
+    #[serde(default = "default_runner_launch_agent_run_at_load")]
+    pub run_at_load: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -169,6 +187,20 @@ impl Default for RunnerConfig {
             cycle_interval_minutes: default_cycle_interval_minutes(),
             notify_after_cycle: default_notify_after_cycle(),
             notify_after_tick: default_notify_after_tick(),
+            launch_agent: RunnerLaunchAgentConfig::default(),
+        }
+    }
+}
+
+impl Default for RunnerLaunchAgentConfig {
+    fn default() -> Self {
+        Self {
+            label: default_runner_launch_agent_label(),
+            plist_path: default_runner_launch_agent_path(),
+            tick_interval_minutes: default_runner_launch_agent_interval_minutes(),
+            stdout_path: default_runner_launch_agent_stdout_path(),
+            stderr_path: default_runner_launch_agent_stderr_path(),
+            run_at_load: default_runner_launch_agent_run_at_load(),
         }
     }
 }
@@ -268,6 +300,30 @@ fn default_cycle_interval_minutes() -> u64 {
 }
 
 fn default_notify_after_tick() -> bool {
+    true
+}
+
+fn default_runner_launch_agent_label() -> String {
+    "com.syncsteward.runner".to_string()
+}
+
+fn default_runner_launch_agent_path() -> PathBuf {
+    PathBuf::from("~/Library/LaunchAgents/com.syncsteward.runner.plist")
+}
+
+fn default_runner_launch_agent_interval_minutes() -> u64 {
+    15
+}
+
+fn default_runner_launch_agent_stdout_path() -> PathBuf {
+    PathBuf::from("~/.local/state/syncsteward/runner.stdout.log")
+}
+
+fn default_runner_launch_agent_stderr_path() -> PathBuf {
+    PathBuf::from("~/.local/state/syncsteward/runner.stderr.log")
+}
+
+fn default_runner_launch_agent_run_at_load() -> bool {
     true
 }
 
@@ -403,6 +459,9 @@ fn normalize_config(mut config: AppConfig) -> Result<AppConfig> {
     config.legacy_lock_path = expand_path(&config.legacy_lock_path);
     config.audit_log_path = expand_path(&config.audit_log_path);
     config.state_path = expand_path(&config.state_path);
+    config.runner.launch_agent.plist_path = expand_path(&config.runner.launch_agent.plist_path);
+    config.runner.launch_agent.stdout_path = expand_path(&config.runner.launch_agent.stdout_path);
+    config.runner.launch_agent.stderr_path = expand_path(&config.runner.launch_agent.stderr_path);
     config.scan.roots = config
         .scan
         .roots
@@ -521,6 +580,12 @@ fn normalize_config(mut config: AppConfig) -> Result<AppConfig> {
     }
     if config.runner.cycle_interval_minutes == 0 {
         bail!("runner.cycle_interval_minutes must be greater than zero");
+    }
+    if config.runner.launch_agent.label.trim().is_empty() {
+        bail!("runner.launch_agent.label must not be empty");
+    }
+    if config.runner.launch_agent.tick_interval_minutes == 0 {
+        bail!("runner.launch_agent.tick_interval_minutes must be greater than zero");
     }
     if config.scan.max_examples == 0 {
         bail!("scan.max_examples must be greater than zero");

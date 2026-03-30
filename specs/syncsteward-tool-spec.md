@@ -26,6 +26,7 @@ Return a full health snapshot:
 - config source
 - active folder, file-class, target-exclusion, and target-snapshot policy defaults
 - local launch agent state
+- dedicated SyncSteward runner launch-agent state
 - remote host reachability and OneDrive service state
 - conflict and `safeBackup` artifact counts
 - latest sync log summary
@@ -280,6 +281,73 @@ Supports:
 - human output
 - JSON output
 
+### `syncsteward runner-agent-status`
+
+Read the dedicated SyncSteward runner launch-agent state.
+
+Outputs:
+
+- config source
+- runner-agent label
+- plist path
+- whether the plist exists
+- whether the agent is loaded
+- whether the agent is running
+- launchctl detail
+
+Supports:
+
+- human output
+- JSON output
+
+### `syncsteward install-runner-agent`
+
+Write and load the dedicated SyncSteward runner launch agent.
+
+Outputs:
+
+- config source
+- install outcome
+- runner-agent status after installation
+- structured steps
+
+Rules:
+
+- requires a real SyncSteward config file so the launch agent points at a stable config path
+- writes a dedicated launchd plist for `runner-tick`
+- loads the agent unless `--write-only` is used
+- replaces an already-loaded copy cleanly before bootstrapping the new one
+- keeps the legacy `com.cloud-sync` job separate and unchanged
+
+Supports:
+
+- `--write-only`
+- human output
+- JSON output
+
+### `syncsteward uninstall-runner-agent`
+
+Unload the dedicated SyncSteward runner launch agent and optionally keep its plist.
+
+Outputs:
+
+- config source
+- uninstall outcome
+- runner-agent status after uninstall
+- structured steps
+
+Rules:
+
+- unloads the dedicated SyncSteward runner agent if it is loaded
+- removes the plist by default
+- supports keeping the plist for later reuse with `--keep-plist`
+
+Supports:
+
+- `--keep-plist`
+- human output
+- JSON output
+
 ### `syncsteward alerts`
 
 Evaluate active alerts from current preflight state and per-target run history.
@@ -449,6 +517,18 @@ Run the same approved-target guarded cycle exposed by the CLI, including dry-run
 ### `runner_tick`
 
 Run the same daemon-ready scheduled tick exposed by the CLI, including dry-run support.
+
+### `runner_agent_status`
+
+Read the same dedicated runner launch-agent state exposed by the CLI.
+
+### `install_runner_agent`
+
+Write and load the same dedicated runner launch agent exposed by the CLI, including write-only support.
+
+### `uninstall_runner_agent`
+
+Unload the same dedicated runner launch agent exposed by the CLI, including keep-plist support.
 
 ### `acknowledge_latest_log`
 

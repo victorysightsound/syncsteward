@@ -1,6 +1,6 @@
 use crate::config::{
-    AppConfig, FolderPolicy, ManagedTarget, PolicyMode, default_config_path, expand_path,
-    load_config, normalize_app_config,
+    AppConfig, FolderPolicy, ManagedTarget, PolicyMode, RunnerLaunchAgentConfig,
+    default_config_path, expand_path, load_config, normalize_app_config,
 };
 use crate::inventory::build_target_inventory;
 use crate::model::{
@@ -9,7 +9,8 @@ use crate::model::{
     ControlReport, CycleSkippedTarget, EnsureTargetIdsReport, LaunchAgentStatus,
     LogAcknowledgeReport, LogSummary, ManagedTargetIdAssignment, ManagedTargetIdAssignmentReason,
     NotifyAlertsReport, PolicySummary, PreflightCheck, PreflightReport,
-    RelocateManagedTargetReport, RemoteStatus, RunCycleReport, RunnerTickReport, ServiceState,
+    RelocateManagedTargetReport, RemoteStatus, RunCycleReport, RunnerAgentAction,
+    RunnerAgentControlReport, RunnerAgentStatusReport, RunnerTickReport, ServiceState,
     StatusReport, TargetBlocker, TargetCheckReport, TargetCheckSetReport, TargetEvaluation,
     TargetRunReport,
 };
@@ -607,6 +608,213 @@ pub fn runner_tick(config_path: Option<&Path>, dry_run: bool) -> Result<RunnerTi
     Ok(report)
 }
 
+pub fn runner_agent_status(config_path: Option<&Path>) -> Result<RunnerAgentStatusReport> {
+    let loaded = load_config(config_path)?;
+    Ok(RunnerAgentStatusReport {
+        config_source: loaded.source.description(),
+        status: probe_launch_agent(
+            &loaded.config.runner.launch_agent.label,
+            Some(&loaded.config.runner.launch_agent.plist_path),
+        ),
+    })
+}
+
+pub fn install_runner_agent(
+    config_path: Option<&Path>,
+    write_only: bool,
+) -> Result<RunnerAgentControlReport> {
+    let output_path = config_path
+        .map(expand_path)
+        .unwrap_or_else(default_config_path);
+    if !output_path.exists() {
+        return Err(anyhow!(
+            "config does not exist at {} (create or scaffold it first)",
+            output_path.display()
+        ));
+    }
+
+    let loaded = load_config(Some(output_path.as_path()))?;
+    let executable_path = std::env::current_exe()
+        .map_err(|error| anyhow!("resolve current executable: {error}"))?;
+    let agent = &loaded.config.runner.launch_agent;
+    let mut steps = Vec::new();
+
+    if let Some(parent) = agent.plist_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    if let Some(parent) = agent.stdout_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    if let Some(parent) = agent.stderr_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+
+    let plist = render_runner_launch_agent_plist(agent, &executable_path, &output_path);
+    fs::write(&agent.plist_path, plist).map_err(|error| {
+        anyhow!(
+            "write runner launch agent plist at {}: {error}",
+            agent.plist_path.display()
+        )
+    })?;
+    steps.push(applied_step(
+        "write_runner_launch_agent_plist",
+        format!("wrote {}", agent.plist_path.display()),
+        format!(
+            "configured {} to run {} --config {} runner-tick every {} minutes",
+            agent.label,
+            executable_path.display(),
+            output_path.display(),
+            agent.tick_interval_minutes
+        ),
+    ));
+
+    if !write_only {
+        let bootout = bootout_launch_agent(agent);
+        steps.push(match bootout {
+            Some(output) if output.success => applied_step(
+                "bootout_runner_launch_agent",
+                format!("removed any existing {}", agent.label),
+                output.trim_or(&output.stdout).to_string(),
+            ),
+            Some(output) => skipped_step(
+                "bootout_runner_launch_agent",
+                format!("no existing {} instance needed removal", agent.label),
+                output.trim_or(&output.stdout).to_string(),
+            ),
+            None => skipped_step(
+                "bootout_runner_launch_agent",
+                format!("no existing {} instance needed removal", agent.label),
+                "launch agent was not loaded".to_string(),
+            ),
+        });
+
+        let domain = launchctl_domain();
+        let plist = agent.plist_path.to_string_lossy().to_string();
+        let bootstrap = run_command("launchctl", ["bootstrap", domain.as_str(), plist.as_str()]);
+        if bootstrap.success {
+            steps.push(applied_step(
+                "bootstrap_runner_launch_agent",
+                format!("loaded {}", agent.label),
+                bootstrap.trim_or(&bootstrap.stdout).to_string(),
+            ));
+        } else {
+            steps.push(failed_step(
+                "bootstrap_runner_launch_agent",
+                format!("failed to load {}", agent.label),
+                bootstrap.trim_or(&bootstrap.stdout).to_string(),
+            ));
+        }
+    } else {
+        steps.push(skipped_step(
+            "bootstrap_runner_launch_agent",
+            format!("left {} written but not loaded", agent.label),
+            "install was requested in write-only mode".to_string(),
+        ));
+    }
+
+    let status = probe_launch_agent(&agent.label, Some(&agent.plist_path));
+    let outcome = summarize_runner_agent_outcome(&steps);
+    let summary = summarize_runner_agent_control(
+        RunnerAgentAction::Install,
+        outcome,
+        write_only,
+        &status,
+        &steps,
+    );
+
+    Ok(RunnerAgentControlReport {
+        config_source: loaded.source.description(),
+        action: RunnerAgentAction::Install,
+        outcome,
+        summary,
+        status,
+        steps,
+    })
+}
+
+pub fn uninstall_runner_agent(
+    config_path: Option<&Path>,
+    keep_plist: bool,
+) -> Result<RunnerAgentControlReport> {
+    let output_path = config_path
+        .map(expand_path)
+        .unwrap_or_else(default_config_path);
+    if !output_path.exists() {
+        return Err(anyhow!(
+            "config does not exist at {} (create or scaffold it first)",
+            output_path.display()
+        ));
+    }
+
+    let loaded = load_config(Some(output_path.as_path()))?;
+    let agent = &loaded.config.runner.launch_agent;
+    let mut steps = Vec::new();
+
+    let bootout = bootout_launch_agent(agent);
+    steps.push(match bootout {
+        Some(output) if output.success => applied_step(
+            "bootout_runner_launch_agent",
+            format!("unloaded {}", agent.label),
+            output.trim_or(&output.stdout).to_string(),
+        ),
+        Some(output) => skipped_step(
+            "bootout_runner_launch_agent",
+            format!("{} was already unloaded", agent.label),
+            output.trim_or(&output.stdout).to_string(),
+        ),
+        None => skipped_step(
+            "bootout_runner_launch_agent",
+            format!("{} was already unloaded", agent.label),
+            "launch agent was not loaded".to_string(),
+        ),
+    });
+
+    if keep_plist {
+        steps.push(skipped_step(
+            "remove_runner_launch_agent_plist",
+            format!("kept {}", agent.plist_path.display()),
+            "uninstall was requested with keep-plist enabled".to_string(),
+        ));
+    } else if agent.plist_path.exists() {
+        fs::remove_file(&agent.plist_path).map_err(|error| {
+            anyhow!(
+                "remove runner launch agent plist at {}: {error}",
+                agent.plist_path.display()
+            )
+        })?;
+        steps.push(applied_step(
+            "remove_runner_launch_agent_plist",
+            format!("removed {}", agent.plist_path.display()),
+            "runner launch agent plist was deleted".to_string(),
+        ));
+    } else {
+        steps.push(skipped_step(
+            "remove_runner_launch_agent_plist",
+            format!("{} was already absent", agent.plist_path.display()),
+            "runner launch agent plist did not exist".to_string(),
+        ));
+    }
+
+    let status = probe_launch_agent(&agent.label, Some(&agent.plist_path));
+    let outcome = summarize_runner_agent_outcome(&steps);
+    let summary = summarize_runner_agent_control(
+        RunnerAgentAction::Uninstall,
+        outcome,
+        keep_plist,
+        &status,
+        &steps,
+    );
+
+    Ok(RunnerAgentControlReport {
+        config_source: loaded.source.description(),
+        action: RunnerAgentAction::Uninstall,
+        outcome,
+        summary,
+        status,
+        steps,
+    })
+}
+
 pub fn pause(config_path: Option<&Path>, target: ActionTarget) -> Result<ControlReport> {
     let loaded = load_config(config_path)?;
     let config_source = loaded.source.description();
@@ -1079,7 +1287,11 @@ fn collect_status(config: &AppConfig, config_source: String) -> StatusReport {
     let acknowledged_log = load_state(&config.state_path)
         .ok()
         .and_then(|state| state.acknowledged_log);
-    let launch_agent = probe_launch_agent(&config.launch_agent_label);
+    let launch_agent = probe_launch_agent(&config.launch_agent_label, Some(&config.launch_agent_path));
+    let runner_agent = probe_launch_agent(
+        &config.runner.launch_agent.label,
+        Some(&config.runner.launch_agent.plist_path),
+    );
     let remote = probe_remote_service(config);
     let artifacts = scan_artifacts(config);
     let latest_log = summarize_latest_log(&config.rclone_log_dir, config.scan.max_examples);
@@ -1094,6 +1306,7 @@ fn collect_status(config: &AppConfig, config_source: String) -> StatusReport {
         config_source,
         policy,
         launch_agent,
+        runner_agent,
         remote,
         artifacts,
         acknowledged_log,
@@ -1854,7 +2067,7 @@ fn execute_resume(config: &AppConfig, config_source: &str, target: ActionTarget)
 }
 
 fn pause_local_launch_agent(config: &AppConfig) -> ActionStep {
-    let launch_agent = probe_launch_agent(&config.launch_agent_label);
+    let launch_agent = probe_launch_agent(&config.launch_agent_label, Some(&config.launch_agent_path));
     if !launch_agent.loaded {
         return skipped_step(
             "pause_local_launch_agent",
@@ -1896,7 +2109,7 @@ fn pause_local_launch_agent(config: &AppConfig) -> ActionStep {
 }
 
 fn resume_local_launch_agent(config: &AppConfig) -> ActionStep {
-    let launch_agent = probe_launch_agent(&config.launch_agent_label);
+    let launch_agent = probe_launch_agent(&config.launch_agent_label, Some(&config.launch_agent_path));
     if launch_agent.loaded {
         return skipped_step(
             "resume_local_launch_agent",
@@ -2324,11 +2537,14 @@ fn append_runner_tick_audit(path: &Path, report: &RunnerTickReport) -> Result<()
     Ok(())
 }
 
-fn probe_launch_agent(label: &str) -> LaunchAgentStatus {
+fn probe_launch_agent(label: &str, plist_path: Option<&Path>) -> LaunchAgentStatus {
+    let installed = plist_path.is_some_and(Path::exists);
     let output = run_command("launchctl", ["list"]);
     if !output.success {
         return LaunchAgentStatus {
             label: label.to_string(),
+            plist_path: plist_path.map(Path::to_path_buf),
+            installed,
             loaded: false,
             running: false,
             detail: format!("launchctl list failed: {}", output.trim_or(&output.stdout)),
@@ -2346,6 +2562,8 @@ fn probe_launch_agent(label: &str) -> LaunchAgentStatus {
             let running = pid_field.parse::<i32>().ok().is_some_and(|pid| pid > 0);
             LaunchAgentStatus {
                 label: label.to_string(),
+                plist_path: plist_path.map(Path::to_path_buf),
+                installed,
                 loaded: true,
                 running,
                 detail: line.trim().to_string(),
@@ -2353,10 +2571,88 @@ fn probe_launch_agent(label: &str) -> LaunchAgentStatus {
         }
         None => LaunchAgentStatus {
             label: label.to_string(),
+            plist_path: plist_path.map(Path::to_path_buf),
+            installed,
             loaded: false,
             running: false,
-            detail: "launchctl list does not contain the label".to_string(),
+            detail: if installed {
+                "launchctl list does not contain the label".to_string()
+            } else {
+                "launch agent plist does not exist yet".to_string()
+            },
         },
+    }
+}
+
+fn render_runner_launch_agent_plist(
+    agent: &RunnerLaunchAgentConfig,
+    executable_path: &Path,
+    config_path: &Path,
+) -> String {
+    let interval_seconds = agent.tick_interval_minutes * 60;
+    format!(
+        concat!(
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n",
+            "<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" ",
+            "\"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n",
+            "<plist version=\"1.0\">\n",
+            "<dict>\n",
+            "  <key>Label</key>\n",
+            "  <string>{label}</string>\n",
+            "  <key>ProgramArguments</key>\n",
+            "  <array>\n",
+            "    <string>{program}</string>\n",
+            "    <string>--config</string>\n",
+            "    <string>{config}</string>\n",
+            "    <string>runner-tick</string>\n",
+            "  </array>\n",
+            "  <key>RunAtLoad</key>\n",
+            "  <{run_at_load}/>\n",
+            "  <key>StartInterval</key>\n",
+            "  <integer>{interval_seconds}</integer>\n",
+            "  <key>StandardOutPath</key>\n",
+            "  <string>{stdout_path}</string>\n",
+            "  <key>StandardErrorPath</key>\n",
+            "  <string>{stderr_path}</string>\n",
+            "</dict>\n",
+            "</plist>\n"
+        ),
+        label = plist_xml_escape(&agent.label),
+        program = plist_xml_escape(&executable_path.to_string_lossy()),
+        config = plist_xml_escape(&config_path.to_string_lossy()),
+        run_at_load = if agent.run_at_load { "true" } else { "false" },
+        interval_seconds = interval_seconds,
+        stdout_path = plist_xml_escape(&agent.stdout_path.to_string_lossy()),
+        stderr_path = plist_xml_escape(&agent.stderr_path.to_string_lossy()),
+    )
+}
+
+fn plist_xml_escape(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&apos;")
+}
+
+fn launchctl_domain() -> String {
+    format!("gui/{}", current_uid())
+}
+
+fn bootout_launch_agent(agent: &RunnerLaunchAgentConfig) -> Option<CommandOutput> {
+    let status = probe_launch_agent(&agent.label, Some(&agent.plist_path));
+    if !status.loaded {
+        return None;
+    }
+
+    let domain = launchctl_domain();
+    let plist = agent.plist_path.to_string_lossy().to_string();
+    let primary = run_command("launchctl", ["bootout", domain.as_str(), plist.as_str()]);
+    if primary.success {
+        Some(primary)
+    } else {
+        Some(run_command("launchctl", ["unload", plist.as_str()]))
     }
 }
 
@@ -2743,6 +3039,64 @@ fn summarize_control_action(
         ActionOutcome::NoOp => format!("nothing changed; {target_name} was already {action_name}d"),
         ActionOutcome::Blocked => format!("{action_name} blocked for {target_name}"),
         ActionOutcome::Failed => format!("{action_name} completed with failures for {target_name}"),
+    }
+}
+
+fn summarize_runner_agent_outcome(steps: &[ActionStep]) -> ActionOutcome {
+    if steps
+        .iter()
+        .any(|step| step.status == ActionStepStatus::Failed)
+    {
+        ActionOutcome::Failed
+    } else if steps
+        .iter()
+        .all(|step| step.status == ActionStepStatus::Skipped)
+    {
+        ActionOutcome::NoOp
+    } else {
+        ActionOutcome::Success
+    }
+}
+
+fn summarize_runner_agent_control(
+    action: RunnerAgentAction,
+    outcome: ActionOutcome,
+    passive_mode: bool,
+    status: &LaunchAgentStatus,
+    _steps: &[ActionStep],
+) -> String {
+    match action {
+        RunnerAgentAction::Install => match outcome {
+            ActionOutcome::Success => {
+                if passive_mode {
+                    format!(
+                        "wrote {} without loading it",
+                        status
+                            .plist_path
+                            .as_ref()
+                            .map(|path| path.display().to_string())
+                            .unwrap_or_else(|| status.label.clone())
+                    )
+                } else {
+                    format!("installed and loaded {}", status.label)
+                }
+            }
+            ActionOutcome::NoOp => format!("{} was already installed", status.label),
+            ActionOutcome::Blocked => format!("installation blocked for {}", status.label),
+            ActionOutcome::Failed => format!("failed to install {}", status.label),
+        },
+        RunnerAgentAction::Uninstall => match outcome {
+            ActionOutcome::Success => {
+                if passive_mode {
+                    format!("unloaded {} and kept its plist", status.label)
+                } else {
+                    format!("uninstalled {}", status.label)
+                }
+            }
+            ActionOutcome::NoOp => format!("{} was already absent", status.label),
+            ActionOutcome::Blocked => format!("uninstall blocked for {}", status.label),
+            ActionOutcome::Failed => format!("failed to uninstall {}", status.label),
+        },
     }
 }
 
@@ -3172,9 +3526,19 @@ path1 and path2 are out of sync, run --resync to recover\n\
             },
             launch_agent: LaunchAgentStatus {
                 label: "com.example.test".to_string(),
+                plist_path: Some(PathBuf::from("/tmp/com.example.test.plist")),
+                installed: true,
                 loaded: false,
                 running: false,
                 detail: "not loaded".to_string(),
+            },
+            runner_agent: LaunchAgentStatus {
+                label: "com.example.runner".to_string(),
+                plist_path: Some(PathBuf::from("/tmp/com.example.runner.plist")),
+                installed: false,
+                loaded: false,
+                running: false,
+                detail: "not installed".to_string(),
             },
             remote: RemoteStatus {
                 selected_host: Some("127.0.0.1".to_string()),

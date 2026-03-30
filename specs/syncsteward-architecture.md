@@ -73,13 +73,14 @@ Configuration now carries both operator paths and safety policy:
 - target-specific exclusion rules for protected bundles and subtrees
 - target-specific snapshot rules for runtime SQLite-backed targets
 - alert thresholds and notification toggles
-- runner settings for the approved target set, cycle cadence, and post-cycle/post-tick notification behavior
+- runner settings for the approved target set, cycle cadence, dedicated runner launch-agent settings, and post-cycle/post-tick notification behavior
 
 ### Status
 
 Status is a neutral snapshot of:
 
 - local sync writer state
+- dedicated SyncSteward runner launch-agent state
 - remote sync writer state
 - drift artifact counts and examples
 - acknowledged historical log baseline, if one exists
@@ -206,10 +207,19 @@ The next daemon-ready layer should also stay inside the same guarded model:
 - approved targets should be declared explicitly in config rather than inferred at runtime
 - one guarded cycle command should evaluate preflight, hold the legacy sync lock for the full cycle, run only approved executable targets, and then evaluate alerts
 - one scheduled runner-tick command should decide whether the approved cycle is due, execute it only when needed, and otherwise return a safe no-op health result
+- SyncSteward should own a dedicated launchd agent for the scheduler path instead of reusing the broad legacy `com.cloud-sync` job
 - future scheduling, menu bar actions, and MCP orchestration should call that cycle command instead of reimplementing sync sequencing
 - future scheduling, menu bar actions, and daemon loops should call the scheduled runner-tick command rather than polling ad hoc target lists
 - cycle execution should record per-target outcomes and preserve skipped-selector details when config refers to a target that no longer resolves cleanly
 - dry-run validation should remain observable in audit history without overwriting the live target-run state that drives alerts
+
+The dedicated runner launch agent should:
+
+- be configurable through SyncSteward config
+- write a stable per-user plist under `~/Library/LaunchAgents`
+- execute `runner-tick` on a shorter wake cadence than the approved-cycle cadence
+- remain separate from the paused legacy `com.cloud-sync` launch agent during migration
+- be manageable through the same CLI and MCP control plane that owns the rest of the product
 
 ## Planned Waves
 

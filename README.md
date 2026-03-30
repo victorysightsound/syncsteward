@@ -14,11 +14,13 @@ The current wave focuses on three things:
 SyncSteward does not restart sync automatically. The current build exposes:
 
 - local launch agent status
+- dedicated SyncSteward runner launch agent status
 - remote OneDrive service status
 - conflict and `safeBackup` artifact detection
 - latest `rclone` log summary
 - preflight checks that answer whether the system is safe to re-enable
 - explicit `pause` and guarded `resume`
+- dedicated runner-agent install/status/uninstall commands for safe launchd scheduling
 - backup-only defaults for live SQLite database files and sidecars
 - target-specific exclusions for protected bundles inside executable targets
 - snapshot-backed handling for runtime SQLite targets like `.memloft`
@@ -88,10 +90,12 @@ SyncSteward now has a config-backed cycle command for the approved healthy subse
 
 - `runner.approved_targets` defines the exact targets the guarded cycle is allowed to execute
 - `runner.cycle_interval_minutes` defines the minimum cadence for scheduled execution
+- `runner.launch_agent.tick_interval_minutes` defines how often launchd should wake the daemon-ready runner entry point
 - `run-cycle` reuses the same single-target guarded execution path instead of inventing a second sync engine
 - `run-cycle` now holds the legacy sync lock for the full cycle, so overlapping cycles and manual target runs cannot interleave
 - dry-run validation still writes audit history, but it does not overwrite the live target-run state that drives alerts
 - `runner-tick` is the daemon-ready entry point: it checks whether the approved cycle is due, runs it only when needed, and otherwise no-ops with the current alert snapshot
+- `install-runner-agent` writes and loads `com.syncsteward.runner`, which schedules `runner-tick` independently of the paused legacy `com.cloud-sync` job
 - this is the first daemon-ready entry point for future scheduling, menu bar UI actions, and MCP orchestration
 - broad legacy folders can stay on `hold` while the approved subset keeps running safely
 
@@ -109,6 +113,9 @@ cargo run -p syncsteward-cli -- alerts
 cargo run -p syncsteward-cli -- notify-alerts --dry-run
 cargo run -p syncsteward-cli -- run-cycle --dry-run
 cargo run -p syncsteward-cli -- runner-tick --dry-run
+cargo run -p syncsteward-cli -- runner-agent-status
+cargo run -p syncsteward-cli -- install-runner-agent
+cargo run -p syncsteward-cli -- uninstall-runner-agent --keep-plist
 cargo run -p syncsteward-cli -- acknowledge-latest-log
 cargo run -p syncsteward-cli -- scaffold-config
 cargo run -p syncsteward-cli -- ensure-target-ids
@@ -125,6 +132,7 @@ cargo run -p syncsteward-cli -- mcp stdio
 The built-in defaults match the current environment:
 
 - macOS launch agent: `~/Library/LaunchAgents/com.cloud-sync.plist`
+- SyncSteward runner launch agent: `~/Library/LaunchAgents/com.syncsteward.runner.plist`
 - sync script: `~/bin/cloud-sync.sh`
 - `rclone` logs: `~/.config/rclone/logs`
 - remote hosts:

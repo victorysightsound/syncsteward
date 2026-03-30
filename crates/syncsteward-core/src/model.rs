@@ -8,10 +8,34 @@ pub struct StatusReport {
     pub config_source: String,
     pub policy: PolicySummary,
     pub launch_agent: LaunchAgentStatus,
+    pub runner_agent: LaunchAgentStatus,
     pub remote: RemoteStatus,
     pub artifacts: ArtifactReport,
     pub acknowledged_log: Option<AcknowledgedLogSummary>,
     pub latest_log: Option<LogSummary>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct RunnerAgentStatusReport {
+    pub config_source: String,
+    pub status: LaunchAgentStatus,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct RunnerAgentControlReport {
+    pub config_source: String,
+    pub action: RunnerAgentAction,
+    pub outcome: ActionOutcome,
+    pub summary: String,
+    pub status: LaunchAgentStatus,
+    pub steps: Vec<ActionStep>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum RunnerAgentAction {
+    Install,
+    Uninstall,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -186,6 +210,8 @@ pub struct PolicySummary {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct LaunchAgentStatus {
     pub label: String,
+    pub plist_path: Option<PathBuf>,
+    pub installed: bool,
     pub loaded: bool,
     pub running: bool,
     pub detail: String,

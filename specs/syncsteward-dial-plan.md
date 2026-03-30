@@ -48,6 +48,7 @@
 - ship a first local notification path for active alerts
 - make the approved-target cycle the future daemon/menu bar execution entry point
 - add a scheduled runner-tick command that only executes the approved cycle when due
+- add a dedicated SyncSteward runner launch agent that schedules `runner-tick` without reusing the legacy broad sync job
 - refine alert deduplication and escalation after the first notification slice lands
 
 ## Phase 5: UI

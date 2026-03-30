@@ -6,8 +6,8 @@ mod state;
 
 pub use config::{
     AppConfig, ConfigSource, FileClass, FileClassPolicy, FolderPolicy, LoadedConfig, ManagedTarget,
-    PolicyConfig, PolicyMode, RemoteConfig, RunnerConfig, ScanConfig, TargetExclusion,
-    TargetSnapshot, default_config_path, load_config, normalize_app_config,
+    PolicyConfig, PolicyMode, RemoteConfig, RunnerConfig, RunnerLaunchAgentConfig, ScanConfig,
+    TargetExclusion, TargetSnapshot, default_config_path, load_config, normalize_app_config,
 };
 pub use inventory::targets;
 pub use model::{
@@ -16,12 +16,14 @@ pub use model::{
     ConfigScaffoldReport, ControlAction, ControlReport, CycleSkippedTarget, EnsureTargetIdsReport,
     LaunchAgentStatus, LegacySyncMode, LogAcknowledgeReport, LogSummary, ManagedTargetIdAssignment,
     ManagedTargetIdAssignmentReason, NotifyAlertsReport, PolicySummary, PreflightCheck,
-    PreflightReport, RelocateManagedTargetReport, RemoteStatus, RunCycleReport, RunnerTickReport,
+    PreflightReport, RelocateManagedTargetReport, RemoteStatus, RunCycleReport,
+    RunnerAgentAction, RunnerAgentControlReport, RunnerAgentStatusReport, RunnerTickReport,
     ServiceState, StatusReport, SyncTargetInventoryReport, SyncTargetRecord, TargetBlocker,
     TargetCheckReport, TargetCheckSetReport, TargetEvaluation, TargetRunReport,
 };
 pub use probe::{
     acknowledge_latest_log, add_managed_target, alerts, check_target, check_targets,
-    ensure_target_ids, notify_alerts, pause, preflight, relocate_managed_target, resume, run_cycle,
-    run_target, runner_tick, scaffold_config, status,
+    ensure_target_ids, install_runner_agent, notify_alerts, pause, preflight,
+    relocate_managed_target, resume, run_cycle, run_target, runner_agent_status, runner_tick,
+    scaffold_config, status, uninstall_runner_agent,
 };

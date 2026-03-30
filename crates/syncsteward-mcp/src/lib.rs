@@ -11,16 +11,19 @@ use std::path::PathBuf;
 use syncsteward_core::{
     ActionTarget, AddManagedTargetReport, AlertReport, ConfigScaffoldReport, ControlReport,
     EnsureTargetIdsReport, LogAcknowledgeReport, NotifyAlertsReport, PolicyMode, PreflightReport,
-    RelocateManagedTargetReport, RunCycleReport, RunnerTickReport, StatusReport,
-    SyncTargetInventoryReport, TargetCheckReport, TargetCheckSetReport, TargetRunReport,
+    RelocateManagedTargetReport, RunCycleReport, RunnerAgentControlReport,
+    RunnerAgentStatusReport, RunnerTickReport, StatusReport, SyncTargetInventoryReport,
+    TargetCheckReport, TargetCheckSetReport, TargetRunReport,
     acknowledge_latest_log as core_acknowledge_latest_log,
     add_managed_target as core_add_managed_target, alerts as core_alerts,
     check_target as core_check_target, check_targets as core_check_targets,
-    ensure_target_ids as core_ensure_target_ids, notify_alerts as core_notify_alerts, pause,
-    preflight, relocate_managed_target as core_relocate_managed_target, resume,
+    ensure_target_ids as core_ensure_target_ids, install_runner_agent as core_install_runner_agent,
+    notify_alerts as core_notify_alerts, pause, preflight,
+    relocate_managed_target as core_relocate_managed_target, resume,
     run_cycle as core_run_cycle, run_target as core_run_target,
-    runner_tick as core_runner_tick,
+    runner_agent_status as core_runner_agent_status, runner_tick as core_runner_tick,
     scaffold_config as core_scaffold_config, status, targets,
+    uninstall_runner_agent as core_uninstall_runner_agent,
 };
 
 type McpResult<T> = Result<Json<T>, String>;
@@ -58,6 +61,18 @@ struct RelocateManagedTargetRequest {
 struct DryRunRequest {
     #[serde(default)]
     dry_run: bool,
+}
+
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+struct RunnerAgentInstallRequest {
+    #[serde(default)]
+    write_only: bool,
+}
+
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+struct RunnerAgentUninstallRequest {
+    #[serde(default)]
+    keep_plist: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -229,6 +244,54 @@ impl SyncStewardMcpServer {
         let config_path = self.config_path.clone();
         let report = tokio::task::spawn_blocking(move || {
             core_runner_tick(config_path.as_deref(), request.dry_run)
+        })
+        .await
+        .map_err(|error| error.to_string())?
+        .map_err(|error| error.to_string())?;
+        Ok(Json(report))
+    }
+
+    #[tool(
+        description = "Read the dedicated SyncSteward runner launch agent state."
+    )]
+    async fn runner_agent_status(&self) -> McpResult<RunnerAgentStatusReport> {
+        let config_path = self.config_path.clone();
+        let report = tokio::task::spawn_blocking(move || {
+            core_runner_agent_status(config_path.as_deref())
+        })
+        .await
+        .map_err(|error| error.to_string())?
+        .map_err(|error| error.to_string())?;
+        Ok(Json(report))
+    }
+
+    #[tool(
+        description = "Write and load the dedicated SyncSteward runner launch agent. Supports write-only mode when you only want to write the plist without loading it."
+    )]
+    async fn install_runner_agent(
+        &self,
+        Parameters(request): Parameters<RunnerAgentInstallRequest>,
+    ) -> McpResult<RunnerAgentControlReport> {
+        let config_path = self.config_path.clone();
+        let report = tokio::task::spawn_blocking(move || {
+            core_install_runner_agent(config_path.as_deref(), request.write_only)
+        })
+        .await
+        .map_err(|error| error.to_string())?
+        .map_err(|error| error.to_string())?;
+        Ok(Json(report))
+    }
+
+    #[tool(
+        description = "Unload the dedicated SyncSteward runner launch agent and optionally keep its plist file on disk."
+    )]
+    async fn uninstall_runner_agent(
+        &self,
+        Parameters(request): Parameters<RunnerAgentUninstallRequest>,
+    ) -> McpResult<RunnerAgentControlReport> {
+        let config_path = self.config_path.clone();
+        let report = tokio::task::spawn_blocking(move || {
+            core_uninstall_runner_agent(config_path.as_deref(), request.keep_plist)
         })
         .await
         .map_err(|error| error.to_string())?

@@ -4,12 +4,13 @@ use syncsteward_core::{
     ActionOutcome, ActionStepStatus, ActionTarget, AddManagedTargetReport, AlertReport,
     AlertSeverity, CheckStatus, ConfigScaffoldReport, ControlReport, EnsureTargetIdsReport,
     LogAcknowledgeReport, NotifyAlertsReport, PolicyMode, PreflightReport,
-    RelocateManagedTargetReport, RunCycleReport, RunnerTickReport, StatusReport,
-    SyncTargetInventoryReport, TargetCheckReport, TargetCheckSetReport, TargetRunReport,
-    acknowledge_latest_log,
-    add_managed_target, alerts, check_target, check_targets, ensure_target_ids, notify_alerts,
-    pause, preflight, relocate_managed_target, resume, run_cycle, run_target, runner_tick,
-    scaffold_config, status, targets,
+    RelocateManagedTargetReport, RunCycleReport, RunnerAgentControlReport,
+    RunnerAgentStatusReport, RunnerTickReport, StatusReport, SyncTargetInventoryReport,
+    TargetCheckReport, TargetCheckSetReport, TargetRunReport, acknowledge_latest_log,
+    add_managed_target, alerts, check_target, check_targets, ensure_target_ids,
+    install_runner_agent, notify_alerts, pause, preflight, relocate_managed_target, resume,
+    run_cycle, run_target, runner_agent_status, runner_tick, scaffold_config, status, targets,
+    uninstall_runner_agent,
 };
 
 #[derive(Debug, Parser)]
@@ -84,6 +85,25 @@ enum Command {
     RunnerTick {
         #[arg(long)]
         dry_run: bool,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Read the dedicated SyncSteward runner launch agent state.
+    RunnerAgentStatus {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Write and load the dedicated SyncSteward runner launch agent.
+    InstallRunnerAgent {
+        #[arg(long)]
+        write_only: bool,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Unload the dedicated SyncSteward runner launch agent and optionally keep its plist.
+    UninstallRunnerAgent {
+        #[arg(long)]
+        keep_plist: bool,
         #[arg(long)]
         json: bool,
     },
@@ -344,6 +364,50 @@ fn run() -> i32 {
             }
             action_exit_code(report.outcome)
         }
+        Command::RunnerAgentStatus { json } => {
+            let report = match runner_agent_status(cli.config.as_deref()) {
+                Ok(report) => report,
+                Err(error) => return fatal_error(&error.to_string()),
+            };
+            if json {
+                if print_json(&report).is_err() {
+                    return fatal_error("failed to serialize runner-agent-status report as JSON");
+                }
+            } else {
+                print_runner_agent_status(&report);
+            }
+            if report.status.loaded { 0 } else { 2 }
+        }
+        Command::InstallRunnerAgent { write_only, json } => {
+            let report = match install_runner_agent(cli.config.as_deref(), write_only) {
+                Ok(report) => report,
+                Err(error) => return fatal_error(&error.to_string()),
+            };
+            if json {
+                if print_json(&report).is_err() {
+                    return fatal_error("failed to serialize install-runner-agent report as JSON");
+                }
+            } else {
+                print_runner_agent_control(&report);
+            }
+            action_exit_code(report.outcome)
+        }
+        Command::UninstallRunnerAgent { keep_plist, json } => {
+            let report = match uninstall_runner_agent(cli.config.as_deref(), keep_plist) {
+                Ok(report) => report,
+                Err(error) => return fatal_error(&error.to_string()),
+            };
+            if json {
+                if print_json(&report).is_err() {
+                    return fatal_error(
+                        "failed to serialize uninstall-runner-agent report as JSON",
+                    );
+                }
+            } else {
+                print_runner_agent_control(&report);
+            }
+            action_exit_code(report.outcome)
+        }
         Command::AcknowledgeLatestLog { json } => {
             let report = match acknowledge_latest_log(cli.config.as_deref()) {
                 Ok(report) => report,
@@ -505,18 +569,46 @@ fn print_status(report: &StatusReport) {
     }
     println!(
         "Local launch agent: {} ({})",
-        if report.launch_agent.loaded {
-            if report.launch_agent.running {
-                "loaded and running"
+        if report.launch_agent.installed {
+            if report.launch_agent.loaded {
+                if report.launch_agent.running {
+                    "installed, loaded, and running"
+                } else {
+                    "installed and loaded"
+                }
             } else {
-                "loaded"
+                "installed but not loaded"
             }
         } else {
             "not loaded"
         },
         report.launch_agent.label
     );
+    if let Some(path) = &report.launch_agent.plist_path {
+        println!("  plist: {}", path.display());
+    }
     println!("  {}", report.launch_agent.detail);
+    println!(
+        "Runner agent: {} ({})",
+        if report.runner_agent.installed {
+            if report.runner_agent.loaded {
+                if report.runner_agent.running {
+                    "installed, loaded, and running"
+                } else {
+                    "installed and loaded"
+                }
+            } else {
+                "installed but not loaded"
+            }
+        } else {
+            "not installed"
+        },
+        report.runner_agent.label
+    );
+    if let Some(path) = &report.runner_agent.plist_path {
+        println!("  plist: {}", path.display());
+    }
+    println!("  {}", report.runner_agent.detail);
 
     let remote_host = report
         .remote
@@ -796,6 +888,72 @@ fn print_runner_tick(report: &RunnerTickReport) {
         println!("Notification: {:?}", notification.outcome);
         println!("  {}", notification.summary);
     }
+    if report.steps.is_empty() {
+        println!("Steps: none");
+    } else {
+        println!("Steps:");
+        for step in &report.steps {
+            println!(
+                "  - [{}] {}",
+                describe_step_status(step.status),
+                step.summary
+            );
+            println!("    {}", step.detail);
+        }
+    }
+}
+
+fn print_runner_agent_status(report: &RunnerAgentStatusReport) {
+    println!("SyncSteward Runner Agent");
+    println!("Config source: {}", report.config_source);
+    println!(
+        "State: {}",
+        if report.status.installed {
+            if report.status.loaded {
+                if report.status.running {
+                    "installed, loaded, and running"
+                } else {
+                    "installed and loaded"
+                }
+            } else {
+                "installed but not loaded"
+            }
+        } else {
+            "not installed"
+        }
+    );
+    println!("Label: {}", report.status.label);
+    if let Some(path) = &report.status.plist_path {
+        println!("Plist: {}", path.display());
+    }
+    println!("Detail: {}", report.status.detail);
+}
+
+fn print_runner_agent_control(report: &RunnerAgentControlReport) {
+    println!("SyncSteward Runner Agent: {:?}", report.outcome);
+    println!("{}", report.summary);
+    println!("Config source: {}", report.config_source);
+    println!("Action: {:?}", report.action);
+    println!(
+        "State: {}",
+        if report.status.installed {
+            if report.status.loaded {
+                if report.status.running {
+                    "installed, loaded, and running"
+                } else {
+                    "installed and loaded"
+                }
+            } else {
+                "installed but not loaded"
+            }
+        } else {
+            "not installed"
+        }
+    );
+    if let Some(path) = &report.status.plist_path {
+        println!("Plist: {}", path.display());
+    }
+    println!("Detail: {}", report.status.detail);
     if report.steps.is_empty() {
         println!("Steps: none");
     } else {
