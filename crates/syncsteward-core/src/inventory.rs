@@ -15,57 +15,65 @@ pub(crate) fn build_target_inventory(
     config_source: String,
 ) -> Result<SyncTargetInventoryReport> {
     let script_path = config.sync_script_path.clone();
-    let contents = fs::read_to_string(&script_path)
-        .with_context(|| format!("read sync script at {}", script_path.display()))?;
-
-    let bisync_folders = parse_array(&contents, "BISYNC_FOLDERS")
-        .with_context(|| format!("parse BISYNC_FOLDERS in {}", script_path.display()))?;
-    let backup_folders = parse_array(&contents, "BACKUP_FOLDERS")
-        .with_context(|| format!("parse BACKUP_FOLDERS in {}", script_path.display()))?;
-
     let mut targets = Vec::new();
+    let legacy_inventory_available = script_path.exists();
 
-    for folder in bisync_folders {
-        let local_path = PathBuf::from(format!(
-            "{}/{}",
-            std::env::var("HOME").unwrap_or_default(),
-            folder
-        ));
-        let (recommended_mode, rationale) =
-            recommend_policy(&folder, LegacySyncMode::Bisync, &local_path);
-        targets.push(SyncTargetRecord {
-            target_id: None,
-            name: folder.clone(),
-            local_path: local_path.clone(),
-            remote_path: format!("OneDrive/{}", folder),
-            legacy_mode: LegacySyncMode::Bisync,
-            recommended_mode,
-            configured_mode: find_configured_mode(config, &local_path),
-            rationale: rationale.to_string(),
-        });
-    }
+    if legacy_inventory_available {
+        let contents = fs::read_to_string(&script_path)
+            .with_context(|| format!("read sync script at {}", script_path.display()))?;
 
-    for mapping in backup_folders {
-        let (local_name, remote_name) = mapping
-            .split_once(':')
-            .ok_or_else(|| anyhow::anyhow!("invalid BACKUP_FOLDERS mapping: {mapping}"))?;
-        let local_path = PathBuf::from(format!(
-            "{}/{}",
-            std::env::var("HOME").unwrap_or_default(),
-            local_name
-        ));
-        let (recommended_mode, rationale) =
-            recommend_policy(local_name, LegacySyncMode::BackupOneWay, &local_path);
-        targets.push(SyncTargetRecord {
-            target_id: None,
-            name: local_name.to_string(),
-            local_path: local_path.clone(),
-            remote_path: format!("OneDrive/{}", remote_name),
-            legacy_mode: LegacySyncMode::BackupOneWay,
-            recommended_mode,
-            configured_mode: find_configured_mode(config, &local_path),
-            rationale: rationale.to_string(),
-        });
+        let bisync_folders = parse_array(&contents, "BISYNC_FOLDERS")
+            .with_context(|| format!("parse BISYNC_FOLDERS in {}", script_path.display()))?;
+        let backup_folders = parse_array(&contents, "BACKUP_FOLDERS")
+            .with_context(|| format!("parse BACKUP_FOLDERS in {}", script_path.display()))?;
+
+        for folder in bisync_folders {
+            let local_path = PathBuf::from(format!(
+                "{}/{}",
+                std::env::var("HOME").unwrap_or_default(),
+                folder
+            ));
+            let (recommended_mode, rationale) =
+                recommend_policy(&folder, LegacySyncMode::Bisync, &local_path);
+            targets.push(SyncTargetRecord {
+                target_id: None,
+                name: folder.clone(),
+                local_path: local_path.clone(),
+                remote_path: format!("OneDrive/{}", folder),
+                legacy_mode: LegacySyncMode::Bisync,
+                recommended_mode,
+                configured_mode: find_configured_mode(config, &local_path),
+                rationale: rationale.to_string(),
+            });
+        }
+
+        for mapping in backup_folders {
+            let (local_name, remote_name) = mapping
+                .split_once(':')
+                .ok_or_else(|| anyhow::anyhow!("invalid BACKUP_FOLDERS mapping: {mapping}"))?;
+            let local_path = PathBuf::from(format!(
+                "{}/{}",
+                std::env::var("HOME").unwrap_or_default(),
+                local_name
+            ));
+            let (recommended_mode, rationale) =
+                recommend_policy(local_name, LegacySyncMode::BackupOneWay, &local_path);
+            targets.push(SyncTargetRecord {
+                target_id: None,
+                name: local_name.to_string(),
+                local_path: local_path.clone(),
+                remote_path: format!("OneDrive/{}", remote_name),
+                legacy_mode: LegacySyncMode::BackupOneWay,
+                recommended_mode,
+                configured_mode: find_configured_mode(config, &local_path),
+                rationale: rationale.to_string(),
+            });
+        }
+    } else if config.managed_targets.is_empty() {
+        bail!(
+            "sync script not found at {} and no managed targets are configured",
+            script_path.display()
+        );
     }
 
     for managed in &config.managed_targets {
@@ -88,6 +96,7 @@ pub(crate) fn build_target_inventory(
     Ok(SyncTargetInventoryReport {
         config_source,
         script_path,
+        legacy_inventory_available,
         targets,
     })
 }

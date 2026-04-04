@@ -10,11 +10,11 @@ use crate::model::{
     ControlAction, ControlReport, CycleSkippedTarget, EnsureTargetIdsReport, LaunchAgentStatus,
     LogAcknowledgeReport, LogSummary, ManagedTargetIdAssignment, ManagedTargetIdAssignmentReason,
     NotifyAlertsReport, OverviewReport, PolicySummary, PreflightCheck, PreflightReport,
-    RecentTargetRunSummary, RelocateManagedTargetReport, RemoteStatus, RunCycleReport,
-    RunnerAgentAction, RunnerAgentControlReport, RunnerAgentStatusReport, RunnerCycleSummary,
-    RunnerOverview, RunnerTickReport, RunnerTickSummary, ServiceState, StatusReport, TargetBlocker,
-    TargetCheckReport, TargetCheckSetReport, TargetEvaluation, TargetHealthOverview,
-    TargetRunReport,
+    PruneStateReport, RecentTargetRunSummary, RelocateManagedTargetReport, RemoteStatus,
+    RunCycleReport, RunnerAgentAction, RunnerAgentControlReport, RunnerAgentStatusReport,
+    RunnerCycleSummary, RunnerOverview, RunnerTickReport, RunnerTickSummary, ServiceState,
+    StatusReport, TargetBlocker, TargetCheckReport, TargetCheckSetReport, TargetEvaluation,
+    TargetHealthOverview, TargetRunReport,
 };
 use crate::state::{
     AlertNotificationState, AppState, RunnerCycleState, RunnerTickState, TargetRunState,
@@ -56,7 +56,13 @@ pub fn overview(config_path: Option<&Path>) -> Result<OverviewReport> {
         &evaluations,
         &state,
     );
-    let targets = build_target_health_overview(&evaluations, &approved_targets, &state);
+    let chronic_failures = build_chronic_failure_overview(&evaluations, &state);
+    let targets = build_target_health_overview(
+        &evaluations,
+        &approved_targets,
+        &state,
+        chronic_failures.len(),
+    );
     let runner = build_runner_overview(
         &loaded.config,
         &status.runner_agent,
@@ -83,6 +89,7 @@ pub fn overview(config_path: Option<&Path>) -> Result<OverviewReport> {
         preflight_checks: preflight.checks,
         runner,
         targets,
+        chronic_failures,
         approved_targets,
         recent_target_runs: build_recent_target_run_summaries(&state),
         alerts: alert_report.alerts,
@@ -1643,6 +1650,69 @@ pub fn relocate_managed_target(
     })
 }
 
+pub fn prune_state(config_path: Option<&Path>, dry_run: bool) -> Result<PruneStateReport> {
+    let loaded = load_config(config_path)?;
+    let config_source = loaded.source.description();
+    let inventory = build_target_inventory(&loaded.config, config_source.clone())?;
+    let state = load_state(&loaded.config.state_path)?;
+
+    let mut keep_keys = std::collections::BTreeSet::new();
+    for target in &inventory.targets {
+        keep_keys.insert(target_state_key(target));
+        keep_keys.insert(target.name.clone());
+        keep_keys.insert(target.local_path.display().to_string());
+    }
+
+    let removed_keys = state
+        .target_runs
+        .keys()
+        .filter(|key| !keep_keys.contains(*key))
+        .cloned()
+        .collect::<Vec<_>>();
+    let remaining_count = state.target_runs.len().saturating_sub(removed_keys.len());
+
+    if removed_keys.is_empty() {
+        return Ok(PruneStateReport {
+            config_source,
+            path: loaded.config.state_path.clone(),
+            dry_run,
+            outcome: ActionOutcome::NoOp,
+            summary: "no stale target-run state needed pruning".to_string(),
+            removed_count: 0,
+            remaining_count,
+            removed_keys,
+        });
+    }
+
+    if !dry_run {
+        let pruned_keys = crate::state::prune_target_runs(&loaded.config.state_path, &keep_keys)?;
+        debug_assert_eq!(pruned_keys, removed_keys);
+    }
+
+    Ok(PruneStateReport {
+        config_source,
+        path: loaded.config.state_path.clone(),
+        dry_run,
+        outcome: ActionOutcome::Success,
+        summary: if dry_run {
+            format!(
+                "dry run would prune {} stale target-run entr{}",
+                removed_keys.len(),
+                if removed_keys.len() == 1 { "y" } else { "ies" }
+            )
+        } else {
+            format!(
+                "pruned {} stale target-run entr{}",
+                removed_keys.len(),
+                if removed_keys.len() == 1 { "y" } else { "ies" }
+            )
+        },
+        removed_count: removed_keys.len(),
+        remaining_count,
+        removed_keys,
+    })
+}
+
 fn load_editable_config(config_path: Option<&Path>) -> Result<(PathBuf, AppConfig)> {
     let output_path = config_path
         .map(expand_path)
@@ -2166,6 +2236,21 @@ fn evaluate_alerts(config: &AppConfig, config_source: String) -> Result<AlertRep
                 detail: run_state.summary.clone(),
                 target_name: Some(evaluation.target.name.clone()),
             });
+            if run_state.consecutive_failure_count >= 3 {
+                alerts.push(AlertRecord {
+                    id: format!("target_{}_chronic_failure", evaluation.target.name),
+                    severity: AlertSeverity::Critical,
+                    summary: format!(
+                        "{} has {} consecutive failed live runs",
+                        evaluation.target.name, run_state.consecutive_failure_count
+                    ),
+                    detail: format!(
+                        "latest outcome {:?} recorded at unix_ms {}",
+                        run_state.outcome, run_state.finished_at_unix_ms
+                    ),
+                    target_name: Some(evaluation.target.name.clone()),
+                });
+            }
             continue;
         }
 
@@ -2192,6 +2277,22 @@ fn evaluate_alerts(config: &AppConfig, config_source: String) -> Result<AlertRep
                 detail: format!(
                     "last successful live run recorded at unix_ms {}",
                     last_success_at
+                ),
+                target_name: Some(evaluation.target.name.clone()),
+            });
+        }
+
+        if run_state.consecutive_failure_count >= 3 {
+            alerts.push(AlertRecord {
+                id: format!("target_{}_chronic_failure", evaluation.target.name),
+                severity: AlertSeverity::Critical,
+                summary: format!(
+                    "{} has {} consecutive failed live runs",
+                    evaluation.target.name, run_state.consecutive_failure_count
+                ),
+                detail: format!(
+                    "latest outcome {:?} recorded at unix_ms {}",
+                    run_state.outcome, run_state.finished_at_unix_ms
                 ),
                 target_name: Some(evaluation.target.name.clone()),
             });
@@ -2260,6 +2361,7 @@ fn build_target_health_overview(
     evaluations: &[TargetEvaluation],
     approved_targets: &[ApprovedTargetOverview],
     state: &AppState,
+    chronic_failure_target_count: usize,
 ) -> TargetHealthOverview {
     let ready_target_count = evaluations
         .iter()
@@ -2303,7 +2405,45 @@ fn build_target_health_overview(
             })
             .count(),
         live_success_target_count,
+        chronic_failure_target_count,
     }
+}
+
+fn build_chronic_failure_overview(
+    evaluations: &[TargetEvaluation],
+    state: &AppState,
+) -> Vec<crate::model::ChronicFailureOverview> {
+    let mut failures = evaluations
+        .iter()
+        .filter_map(|evaluation| {
+            let run_state = lookup_target_run_state(state, &evaluation.target)?;
+            let count = run_state.consecutive_failure_count;
+            if count < 3 {
+                return None;
+            }
+
+            Some(crate::model::ChronicFailureOverview {
+                target_name: run_state.target_name.clone(),
+                target_id: run_state.target_id.clone(),
+                local_path: run_state.local_path.clone(),
+                consecutive_failure_count: count,
+                outcome: run_state.outcome,
+                summary: format!(
+                    "{} has failed {} consecutive live runs",
+                    run_state.target_name, count
+                ),
+            })
+        })
+        .collect::<Vec<_>>();
+
+    failures.sort_by(|left, right| {
+        right
+            .consecutive_failure_count
+            .cmp(&left.consecutive_failure_count)
+            .then_with(|| left.target_name.cmp(&right.target_name))
+    });
+
+    failures
 }
 
 fn build_approved_target_overview(
@@ -3081,6 +3221,24 @@ fn record_target_run(config: &AppConfig, report: &TargetRunReport) {
     }
 
     let finished_at_unix_ms = now_unix_ms();
+    let state_key = target_state_key(&report.evaluation.target);
+    let existing_state = load_state(&config.state_path).ok();
+    let existing_run = existing_state
+        .as_ref()
+        .and_then(|state| state.target_runs.get(&state_key))
+        .or_else(|| {
+            existing_state
+                .as_ref()
+                .and_then(|state| state.target_runs.get(&report.evaluation.target.name))
+        });
+    let consecutive_failure_count =
+        if matches!(report.outcome, ActionOutcome::Success | ActionOutcome::NoOp) {
+            0
+        } else {
+            existing_run
+                .map(|run| run.consecutive_failure_count.saturating_add(1))
+                .unwrap_or(1)
+        };
 
     let state = TargetRunState {
         target_name: report.evaluation.target.name.clone(),
@@ -3095,10 +3253,10 @@ fn record_target_run(config: &AppConfig, report: &TargetRunReport) {
         } else {
             None
         },
+        consecutive_failure_count,
         summary: report.summary.clone(),
     };
 
-    let state_key = target_state_key(&report.evaluation.target);
     if let Err(error) = save_target_run(&config.state_path, &state_key, state) {
         eprintln!("syncsteward: failed to record target run state: {error}");
     }
@@ -4408,7 +4566,7 @@ impl ActionTarget {
 mod tests {
     use super::{
         ActionOutcome, ActionStepStatus, add_managed_target, alert_signature, analyze_log_contents,
-        build_recent_target_run_summaries, ensure_target_ids, evaluate_preflight,
+        build_recent_target_run_summaries, ensure_target_ids, evaluate_preflight, prune_state,
         relocate_managed_target, run_spawned_command_with_retry, runner_due_status,
         scheduled_notify_alerts, summarize_command_output, summarize_outcome, target_state_key,
         update_config,
@@ -4616,6 +4774,7 @@ path1 and path2 are out of sync, run --resync to recover\n\
                 dry_run: false,
                 finished_at_unix_ms: 100,
                 last_success_at_unix_ms: Some(100),
+                consecutive_failure_count: 0,
                 summary: "older summary".to_string(),
             },
         );
@@ -4630,6 +4789,7 @@ path1 and path2 are out of sync, run --resync to recover\n\
                 dry_run: false,
                 finished_at_unix_ms: 200,
                 last_success_at_unix_ms: Some(150),
+                consecutive_failure_count: 0,
                 summary: "newer summary".to_string(),
             },
         );
@@ -4639,6 +4799,166 @@ path1 and path2 are out of sync, run --resync to recover\n\
         assert_eq!(runs.len(), 2);
         assert_eq!(runs[0].target_name, "Newer");
         assert_eq!(runs[1].target_name, "Older");
+    }
+
+    #[test]
+    fn prune_state_removes_stale_target_runs_without_touching_current_entries() {
+        let temp_root = std::env::temp_dir().join(format!("syncsteward-test-{}", Uuid::now_v7()));
+        let temp_path = temp_root.join("config.toml");
+        let state_path = temp_root.join("state.json");
+        let target_path = temp_root.join("Notes/Personal");
+        fs::create_dir_all(&target_path).expect("create target path");
+        fs::create_dir_all(&temp_root).expect("create temp root");
+
+        let mut config = AppConfig::default();
+        config.sync_script_path = temp_root.join("cloud-sync.sh");
+        config.state_path = state_path.clone();
+        config.managed_targets = vec![ManagedTarget {
+            target_id: Some("managed-1".to_string()),
+            name: "Notes/Personal".to_string(),
+            local_path: target_path.clone(),
+            remote_path: "OneDrive/Notes/Personal".to_string(),
+            mode: PolicyMode::BackupOnly,
+            rationale: None,
+        }];
+        fs::write(
+            &temp_path,
+            toml::to_string_pretty(&config).expect("serialize config"),
+        )
+        .expect("write config");
+
+        let mut state = AppState::default();
+        state.target_runs.insert(
+            "managed-1".to_string(),
+            TargetRunState {
+                target_name: "Notes/Personal".to_string(),
+                target_id: Some("managed-1".to_string()),
+                local_path: target_path.clone(),
+                effective_mode: PolicyMode::BackupOnly,
+                outcome: ActionOutcome::Success,
+                dry_run: false,
+                finished_at_unix_ms: 100,
+                last_success_at_unix_ms: Some(100),
+                consecutive_failure_count: 0,
+                summary: "current".to_string(),
+            },
+        );
+        state.target_runs.insert(
+            "obsolete".to_string(),
+            TargetRunState {
+                target_name: "Old".to_string(),
+                target_id: Some("obsolete".to_string()),
+                local_path: temp_root.join("Old"),
+                effective_mode: PolicyMode::BackupOnly,
+                outcome: ActionOutcome::Failed,
+                dry_run: false,
+                finished_at_unix_ms: 50,
+                last_success_at_unix_ms: None,
+                consecutive_failure_count: 4,
+                summary: "stale".to_string(),
+            },
+        );
+        fs::write(
+            &state_path,
+            serde_json::to_string_pretty(&state).expect("serialize state"),
+        )
+        .expect("write state");
+
+        let dry_run_report = prune_state(Some(temp_path.as_path()), true).expect("dry-run prune");
+        assert!(dry_run_report.dry_run);
+        assert_eq!(dry_run_report.removed_count, 1);
+        assert!(
+            fs::read_to_string(&state_path)
+                .expect("read state")
+                .contains("\"obsolete\"")
+        );
+
+        let live_report = prune_state(Some(temp_path.as_path()), false).expect("live prune");
+        assert_eq!(live_report.outcome, ActionOutcome::Success);
+        assert_eq!(live_report.removed_count, 1);
+
+        let pruned_state = crate::state::load_state(&state_path).expect("load pruned state");
+        assert_eq!(pruned_state.target_runs.len(), 1);
+        assert!(pruned_state.target_runs.contains_key("managed-1"));
+
+        let _ = fs::remove_dir_all(temp_root);
+    }
+
+    #[test]
+    fn chronic_failure_alerts_are_visible_in_alert_evaluation() {
+        let temp_root = std::env::temp_dir().join(format!("syncsteward-test-{}", Uuid::now_v7()));
+        let temp_path = temp_root.join("config.toml");
+        let state_path = temp_root.join("state.json");
+        let target_path = temp_root.join("Notes/Personal");
+        fs::create_dir_all(&target_path).expect("create target path");
+        fs::create_dir_all(&temp_root).expect("create temp root");
+
+        let mut config = AppConfig::default();
+        config.sync_script_path = temp_root.join("cloud-sync.sh");
+        config.state_path = state_path.clone();
+        config.managed_targets = vec![ManagedTarget {
+            target_id: Some("managed-1".to_string()),
+            name: "Notes/Personal".to_string(),
+            local_path: target_path.clone(),
+            remote_path: "OneDrive/Notes/Personal".to_string(),
+            mode: PolicyMode::BackupOnly,
+            rationale: None,
+        }];
+        fs::write(
+            &temp_path,
+            toml::to_string_pretty(&config).expect("serialize config"),
+        )
+        .expect("write config");
+
+        let mut state = AppState::default();
+        state.target_runs.insert(
+            "managed-1".to_string(),
+            TargetRunState {
+                target_name: "Notes/Personal".to_string(),
+                target_id: Some("managed-1".to_string()),
+                local_path: target_path.clone(),
+                effective_mode: PolicyMode::BackupOnly,
+                outcome: ActionOutcome::Failed,
+                dry_run: false,
+                finished_at_unix_ms: 100,
+                last_success_at_unix_ms: None,
+                consecutive_failure_count: 3,
+                summary: "failed three times".to_string(),
+            },
+        );
+        fs::write(
+            &state_path,
+            serde_json::to_string_pretty(&state).expect("serialize state"),
+        )
+        .expect("write state");
+
+        let report = super::evaluate_alerts(&config, "test".to_string()).expect("alerts");
+        assert!(
+            report
+                .alerts
+                .iter()
+                .any(|alert| alert.id == "target_Notes/Personal_chronic_failure")
+        );
+
+        let overview = super::build_chronic_failure_overview(
+            &[super::evaluate_target(
+                &super::evaluate_preflight(super::collect_status(&config, "test".to_string())),
+                crate::model::SyncTargetRecord {
+                    target_id: Some("managed-1".to_string()),
+                    name: "Notes/Personal".to_string(),
+                    local_path: target_path.clone(),
+                    remote_path: "OneDrive/Notes/Personal".to_string(),
+                    legacy_mode: crate::model::LegacySyncMode::Managed,
+                    recommended_mode: PolicyMode::BackupOnly,
+                    configured_mode: Some(PolicyMode::BackupOnly),
+                    rationale: "test".to_string(),
+                },
+            )],
+            &crate::state::load_state(&state_path).expect("load state"),
+        );
+        assert_eq!(overview.len(), 1);
+
+        let _ = fs::remove_dir_all(temp_root);
     }
 
     #[test]

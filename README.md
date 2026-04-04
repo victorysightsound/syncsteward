@@ -26,7 +26,7 @@ SyncSteward does not restart sync automatically. The current build exposes:
 - target-specific exclusions for protected bundles inside executable targets
 - snapshot-backed handling for runtime SQLite targets like `.memloft`
 - bounded retries around `rclone` sync and copy operations so one transient remote hiccup does not poison the whole approved cycle
-- target inventory from the current `cloud-sync.sh` with safer recommended policies
+- target inventory from the legacy sync script when available, otherwise explicit managed targets with safer recommended policies
 - explicitly managed subtargets that can be backed up safely while their broad parent folder stays on hold
 - durable managed-target IDs as the first foundation for future relocate/adopt workflows
 - managed-target lifecycle commands for adding curated paths and relocating existing targets without hand-editing config
@@ -208,7 +208,7 @@ The built-in defaults match the current environment:
 
 - macOS launch agent: `~/Library/LaunchAgents/com.cloud-sync.plist`
 - SyncSteward runner launch agent: `~/Library/LaunchAgents/com.syncsteward.runner.plist`
-- sync script: `~/bin/cloud-sync.sh`
+- legacy sync script: `~/bin/cloud-sync.sh`
 - `rclone` logs: `~/.config/rclone/logs`
 - remote hosts:
   - `192.168.77.135`

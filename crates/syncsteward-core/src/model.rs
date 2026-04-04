@@ -55,6 +55,7 @@ pub struct OverviewReport {
     pub preflight_checks: Vec<PreflightCheck>,
     pub runner: RunnerOverview,
     pub targets: TargetHealthOverview,
+    pub chronic_failures: Vec<ChronicFailureOverview>,
     pub approved_targets: Vec<ApprovedTargetOverview>,
     pub recent_target_runs: Vec<RecentTargetRunSummary>,
     pub alerts: Vec<AlertRecord>,
@@ -103,6 +104,17 @@ pub struct TargetHealthOverview {
     pub blocked_target_count: usize,
     pub ready_approved_target_count: usize,
     pub live_success_target_count: usize,
+    pub chronic_failure_target_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ChronicFailureOverview {
+    pub target_name: String,
+    pub target_id: Option<String>,
+    pub local_path: PathBuf,
+    pub consecutive_failure_count: u32,
+    pub outcome: ActionOutcome,
+    pub summary: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -153,6 +165,7 @@ pub enum RunnerAgentAction {
 pub struct SyncTargetInventoryReport {
     pub config_source: String,
     pub script_path: PathBuf,
+    pub legacy_inventory_available: bool,
     pub targets: Vec<SyncTargetRecord>,
 }
 
@@ -214,6 +227,18 @@ pub struct RunCycleReport {
     pub skipped_targets: Vec<CycleSkippedTarget>,
     pub alerts: Vec<AlertRecord>,
     pub notification: Option<NotifyAlertsReport>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct PruneStateReport {
+    pub config_source: String,
+    pub path: PathBuf,
+    pub dry_run: bool,
+    pub outcome: ActionOutcome,
+    pub summary: String,
+    pub removed_count: usize,
+    pub remaining_count: usize,
+    pub removed_keys: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]

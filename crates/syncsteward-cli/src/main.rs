@@ -5,13 +5,13 @@ use syncsteward_core::{
     AlertSeverity, CheckStatus, ConfigPatch, ConfigScaffoldReport, ConfigSchemaReport,
     ConfigSnapshotReport, ConfigUpdateReport, ControlReport, EnsureTargetIdsReport,
     LogAcknowledgeReport, NotifyAlertsReport, OverviewReport, PolicyMode, PreflightReport,
-    RelocateManagedTargetReport, RunCycleReport, RunnerAgentControlReport, RunnerAgentStatusReport,
-    RunnerTickReport, StatusReport, SyncTargetInventoryReport, TargetCheckReport,
-    TargetCheckSetReport, TargetRunReport, acknowledge_latest_log, add_managed_target, alerts,
-    check_target, check_targets, config_schema, config_snapshot, ensure_target_ids,
-    install_runner_agent, notify_alerts, overview, pause, preflight, relocate_managed_target,
-    resume, run_cycle, run_target, runner_agent_status, runner_tick, scaffold_config, status,
-    targets, uninstall_runner_agent, update_config,
+    PruneStateReport, RelocateManagedTargetReport, RunCycleReport, RunnerAgentControlReport,
+    RunnerAgentStatusReport, RunnerTickReport, StatusReport, SyncTargetInventoryReport,
+    TargetCheckReport, TargetCheckSetReport, TargetRunReport, acknowledge_latest_log,
+    add_managed_target, alerts, check_target, check_targets, config_schema, config_snapshot,
+    ensure_target_ids, install_runner_agent, notify_alerts, overview, pause, preflight,
+    prune_state, relocate_managed_target, resume, run_cycle, run_target, runner_agent_status,
+    runner_tick, scaffold_config, status, targets, uninstall_runner_agent, update_config,
 };
 
 #[derive(Debug, Parser)]
@@ -44,7 +44,7 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
-    /// Read the legacy sync targets from the current cloud-sync script and show the safer recommended policy for each one.
+    /// Read the current sync target inventory from the legacy script when available or managed targets otherwise.
     Targets {
         #[arg(long)]
         json: bool,
@@ -132,6 +132,13 @@ enum Command {
     ConfigSet {
         #[arg(long)]
         patch_file: PathBuf,
+        #[arg(long)]
+        dry_run: bool,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Prune stale target-run state entries that no longer match any current target.
+    PruneState {
         #[arg(long)]
         dry_run: bool,
         #[arg(long)]
@@ -511,6 +518,20 @@ fn run() -> i32 {
             }
             action_exit_code(report.outcome)
         }
+        Command::PruneState { dry_run, json } => {
+            let report = match prune_state(cli.config.as_deref(), dry_run) {
+                Ok(report) => report,
+                Err(error) => return fatal_error(&error.to_string()),
+            };
+            if json {
+                if print_json(&report).is_err() {
+                    return fatal_error("failed to serialize prune-state report as JSON");
+                }
+            } else {
+                print_prune_state(&report);
+            }
+            action_exit_code(report.outcome)
+        }
         Command::ScaffoldConfig { force, json } => {
             let report = match scaffold_config(cli.config.as_deref(), force) {
                 Ok(report) => report,
@@ -699,11 +720,12 @@ fn print_overview(report: &OverviewReport) {
         println!("    {}", last_tick.summary);
     }
     println!(
-        "Targets: {} total, {} managed, {} ready, {} blocked",
+        "Targets: {} total, {} managed, {} ready, {} blocked, {} chronic failures",
         report.targets.total_target_count,
         report.targets.managed_target_count,
         report.targets.ready_target_count,
-        report.targets.blocked_target_count
+        report.targets.blocked_target_count,
+        report.targets.chronic_failure_target_count
     );
     println!(
         "  approved: {} configured, {} resolved, {} ready, {} with live success",
@@ -753,6 +775,18 @@ fn print_overview(report: &OverviewReport) {
                     }
                 }
             }
+        }
+    }
+
+    if report.chronic_failures.is_empty() {
+        println!("Chronic failures: none");
+    } else {
+        println!("Chronic failures:");
+        for failure in &report.chronic_failures {
+            println!(
+                "- {} [{}] {}",
+                failure.target_name, failure.consecutive_failure_count, failure.summary
+            );
         }
     }
 
@@ -947,6 +981,14 @@ fn print_targets(report: &SyncTargetInventoryReport) {
     println!("SyncSteward Target Inventory");
     println!("Config source: {}", report.config_source);
     println!("Script path: {}", report.script_path.display());
+    println!(
+        "Legacy inventory: {}",
+        if report.legacy_inventory_available {
+            "available"
+        } else {
+            "unavailable, managed targets only"
+        }
+    );
     for target in &report.targets {
         println!(
             "- {} [{} -> {}]",
@@ -1334,6 +1376,24 @@ fn print_config_update(report: &ConfigUpdateReport) {
         println!("Changed fields:");
         for field in &report.changed_fields {
             println!("  - {}", field);
+        }
+    }
+}
+
+fn print_prune_state(report: &PruneStateReport) {
+    println!("SyncSteward Prune State: {:?}", report.outcome);
+    println!("{}", report.summary);
+    println!("Config source: {}", report.config_source);
+    println!("State path: {}", report.path.display());
+    println!("Dry run: {}", if report.dry_run { "yes" } else { "no" });
+    println!("Removed: {}", report.removed_count);
+    println!("Remaining: {}", report.remaining_count);
+    if report.removed_keys.is_empty() {
+        println!("Removed keys: none");
+    } else {
+        println!("Removed keys:");
+        for key in &report.removed_keys {
+            println!("  - {}", key);
         }
     }
 }

@@ -54,6 +54,8 @@ pub struct TargetRunState {
     pub dry_run: bool,
     pub finished_at_unix_ms: u128,
     pub last_success_at_unix_ms: Option<u128>,
+    #[serde(default)]
+    pub consecutive_failure_count: u32,
     pub summary: String,
 }
 
@@ -131,6 +133,33 @@ pub fn save_target_run(path: &Path, state_key: &str, run: TargetRunState) -> Res
     }
     fs::write(path, serde_json::to_string_pretty(&state)?)?;
     Ok(())
+}
+
+pub fn prune_target_runs(
+    path: &Path,
+    keep_keys: &std::collections::BTreeSet<String>,
+) -> Result<Vec<String>> {
+    let mut state = load_state(path)?;
+    let removed_keys = state
+        .target_runs
+        .keys()
+        .filter(|key| !keep_keys.contains(*key))
+        .cloned()
+        .collect::<Vec<_>>();
+
+    if removed_keys.is_empty() {
+        return Ok(removed_keys);
+    }
+
+    for key in &removed_keys {
+        state.target_runs.remove(key);
+    }
+
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(path, serde_json::to_string_pretty(&state)?)?;
+    Ok(removed_keys)
 }
 
 pub fn save_runner_cycle(

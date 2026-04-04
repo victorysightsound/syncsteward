@@ -53,7 +53,7 @@ Supports:
 
 ### `syncsteward targets`
 
-Read the current `cloud-sync.sh` target inventory and merge it with any explicit managed targets from SyncSteward config.
+Read the current target inventory from the legacy sync script when it exists, otherwise fall back to explicit managed targets from SyncSteward config.
 
 Outputs:
 
