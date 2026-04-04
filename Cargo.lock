@@ -792,6 +792,7 @@ dependencies = [
  "serde_json",
  "syncsteward-core",
  "syncsteward-mcp",
+ "toml",
 ]
 
 [[package]]

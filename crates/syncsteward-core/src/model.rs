@@ -1,4 +1,7 @@
-use crate::config::{FileClassPolicy, FolderPolicy, TargetExclusion, TargetSnapshot};
+use crate::config::{
+    AlertConfig, AppConfig, FileClassPolicy, FolderPolicy, ManagedTarget, PolicyConfig,
+    TargetExclusion, TargetSnapshot,
+};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -13,6 +16,31 @@ pub struct StatusReport {
     pub artifacts: ArtifactReport,
     pub acknowledged_log: Option<AcknowledgedLogSummary>,
     pub latest_log: Option<LogSummary>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ConfigSnapshotReport {
+    pub config_source: String,
+    pub path: Option<PathBuf>,
+    pub config: AppConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ConfigSchemaReport {
+    pub config_source: String,
+    pub schema: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ConfigUpdateReport {
+    pub config_source: String,
+    pub path: PathBuf,
+    pub dry_run: bool,
+    pub created: bool,
+    pub outcome: ActionOutcome,
+    pub summary: String,
+    pub changed_fields: Vec<String>,
+    pub config: AppConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -432,6 +460,90 @@ pub struct ConfigScaffoldReport {
     pub overwritten: bool,
     pub folder_policy_count: usize,
     pub file_class_policy_count: usize,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+pub struct ConfigPatch {
+    #[serde(default)]
+    pub launch_agent_label: Option<String>,
+    #[serde(default)]
+    pub launch_agent_path: Option<PathBuf>,
+    #[serde(default)]
+    pub sync_script_path: Option<PathBuf>,
+    #[serde(default)]
+    pub rclone_log_dir: Option<PathBuf>,
+    #[serde(default)]
+    pub ssh_key_path: Option<PathBuf>,
+    #[serde(default)]
+    pub sync_filter_path: Option<PathBuf>,
+    #[serde(default)]
+    pub memloft_filter_path: Option<PathBuf>,
+    #[serde(default)]
+    pub legacy_lock_path: Option<PathBuf>,
+    #[serde(default)]
+    pub audit_log_path: Option<PathBuf>,
+    #[serde(default)]
+    pub state_path: Option<PathBuf>,
+    #[serde(default)]
+    pub remote: Option<RemoteConfigPatch>,
+    #[serde(default)]
+    pub scan: Option<ScanConfigPatch>,
+    #[serde(default)]
+    pub runner: Option<RunnerConfigPatch>,
+    #[serde(default)]
+    pub managed_targets: Option<Vec<ManagedTarget>>,
+    #[serde(default)]
+    pub alerts: Option<AlertConfig>,
+    #[serde(default)]
+    pub policy: Option<PolicyConfig>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+pub struct RemoteConfigPatch {
+    #[serde(default)]
+    pub ssh_user: Option<String>,
+    #[serde(default)]
+    pub preferred_hosts: Option<Vec<String>>,
+    #[serde(default)]
+    pub onedrive_service: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+pub struct ScanConfigPatch {
+    #[serde(default)]
+    pub roots: Option<Vec<PathBuf>>,
+    #[serde(default)]
+    pub max_examples: Option<usize>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+pub struct RunnerConfigPatch {
+    #[serde(default)]
+    pub approved_targets: Option<Vec<String>>,
+    #[serde(default)]
+    pub cycle_interval_minutes: Option<u64>,
+    #[serde(default)]
+    pub notify_after_cycle: Option<bool>,
+    #[serde(default)]
+    pub notify_after_tick: Option<bool>,
+    #[serde(default)]
+    pub launch_agent: Option<RunnerLaunchAgentConfigPatch>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+pub struct RunnerLaunchAgentConfigPatch {
+    #[serde(default)]
+    pub label: Option<String>,
+    #[serde(default)]
+    pub plist_path: Option<PathBuf>,
+    #[serde(default)]
+    pub tick_interval_minutes: Option<u64>,
+    #[serde(default)]
+    pub stdout_path: Option<PathBuf>,
+    #[serde(default)]
+    pub stderr_path: Option<PathBuf>,
+    #[serde(default)]
+    pub run_at_load: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]

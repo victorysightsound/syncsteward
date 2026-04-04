@@ -2,14 +2,16 @@ use clap::{Parser, Subcommand, ValueEnum};
 use std::path::PathBuf;
 use syncsteward_core::{
     ActionOutcome, ActionStepStatus, ActionTarget, AddManagedTargetReport, AlertReport,
-    AlertSeverity, CheckStatus, ConfigScaffoldReport, ControlReport, EnsureTargetIdsReport,
+    AlertSeverity, CheckStatus, ConfigPatch, ConfigScaffoldReport, ConfigSchemaReport,
+    ConfigSnapshotReport, ConfigUpdateReport, ControlReport, EnsureTargetIdsReport,
     LogAcknowledgeReport, NotifyAlertsReport, OverviewReport, PolicyMode, PreflightReport,
     RelocateManagedTargetReport, RunCycleReport, RunnerAgentControlReport, RunnerAgentStatusReport,
     RunnerTickReport, StatusReport, SyncTargetInventoryReport, TargetCheckReport,
     TargetCheckSetReport, TargetRunReport, acknowledge_latest_log, add_managed_target, alerts,
-    check_target, check_targets, ensure_target_ids, install_runner_agent, notify_alerts, overview,
-    pause, preflight, relocate_managed_target, resume, run_cycle, run_target, runner_agent_status,
-    runner_tick, scaffold_config, status, targets, uninstall_runner_agent,
+    check_target, check_targets, config_schema, config_snapshot, ensure_target_ids,
+    install_runner_agent, notify_alerts, overview, pause, preflight, relocate_managed_target,
+    resume, run_cycle, run_target, runner_agent_status, runner_tick, scaffold_config, status,
+    targets, uninstall_runner_agent, update_config,
 };
 
 #[derive(Debug, Parser)]
@@ -113,6 +115,25 @@ enum Command {
     },
     /// Acknowledge the latest rclone log as historical baseline state.
     AcknowledgeLatestLog {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Read the normalized SyncSteward config as the current operator state snapshot.
+    Config {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Read the generated JSON schema for the SyncSteward config model.
+    ConfigSchema {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Update SyncSteward config from a patch file without hand-editing the full file.
+    ConfigSet {
+        #[arg(long)]
+        patch_file: PathBuf,
+        #[arg(long)]
+        dry_run: bool,
         #[arg(long)]
         json: bool,
     },
@@ -437,6 +458,56 @@ fn run() -> i32 {
                 }
             } else {
                 print_acknowledged_log(&report);
+            }
+            action_exit_code(report.outcome)
+        }
+        Command::Config { json } => {
+            let report = match config_snapshot(cli.config.as_deref()) {
+                Ok(report) => report,
+                Err(error) => return fatal_error(&error.to_string()),
+            };
+            if json {
+                if print_json(&report).is_err() {
+                    return fatal_error("failed to serialize config snapshot as JSON");
+                }
+            } else {
+                print_config_snapshot(&report);
+            }
+            0
+        }
+        Command::ConfigSchema { json } => {
+            let report = match config_schema(cli.config.as_deref()) {
+                Ok(report) => report,
+                Err(error) => return fatal_error(&error.to_string()),
+            };
+            if json {
+                if print_json(&report).is_err() {
+                    return fatal_error("failed to serialize config schema as JSON");
+                }
+            } else {
+                print_config_schema(&report);
+            }
+            0
+        }
+        Command::ConfigSet {
+            patch_file,
+            dry_run,
+            json,
+        } => {
+            let patch = match load_config_patch(&patch_file) {
+                Ok(patch) => patch,
+                Err(error) => return fatal_error(&error.to_string()),
+            };
+            let report = match update_config(cli.config.as_deref(), patch, dry_run) {
+                Ok(report) => report,
+                Err(error) => return fatal_error(&error.to_string()),
+            };
+            if json {
+                if print_json(&report).is_err() {
+                    return fatal_error("failed to serialize config update as JSON");
+                }
+            } else {
+                print_config_update(&report);
             }
             action_exit_code(report.outcome)
         }
@@ -1206,6 +1277,67 @@ fn print_acknowledged_log(report: &LogAcknowledgeReport) {
     }
 }
 
+fn print_config_snapshot(report: &ConfigSnapshotReport) {
+    println!("SyncSteward Config");
+    println!("Config source: {}", report.config_source);
+    if let Some(path) = &report.path {
+        println!("Path: {}", path.display());
+    } else {
+        println!("Path: built-in defaults");
+    }
+    println!("Launch agent: {}", report.config.launch_agent_label);
+    println!("Sync script: {}", report.config.sync_script_path.display());
+    println!("Rclone logs: {}", report.config.rclone_log_dir.display());
+    println!("State path: {}", report.config.state_path.display());
+    println!("Managed targets: {}", report.config.managed_targets.len());
+    println!(
+        "Approved targets: {}",
+        report.config.runner.approved_targets.len()
+    );
+    println!(
+        "Policy folders: {}, file classes: {}, target exclusions: {}, snapshots: {}",
+        report.config.policy.folders.len(),
+        report.config.policy.file_classes.len(),
+        report.config.policy.target_exclusions.len(),
+        report.config.policy.target_snapshots.len()
+    );
+}
+
+fn print_config_schema(report: &ConfigSchemaReport) {
+    println!("SyncSteward Config Schema");
+    println!("Config source: {}", report.config_source);
+    if let Some(title) = report.schema.get("title").and_then(|value| value.as_str()) {
+        println!("Title: {}", title);
+    }
+    if let Some(properties) = report
+        .schema
+        .get("properties")
+        .and_then(|value| value.as_object())
+    {
+        println!("Top-level fields:");
+        for key in properties.keys() {
+            println!("  - {}", key);
+        }
+    }
+}
+
+fn print_config_update(report: &ConfigUpdateReport) {
+    println!("SyncSteward Config Update: {:?}", report.outcome);
+    println!("{}", report.summary);
+    println!("Config source: {}", report.config_source);
+    println!("Path: {}", report.path.display());
+    println!("Dry run: {}", if report.dry_run { "yes" } else { "no" });
+    println!("Created: {}", if report.created { "yes" } else { "no" });
+    if report.changed_fields.is_empty() {
+        println!("Changed fields: none");
+    } else {
+        println!("Changed fields:");
+        for field in &report.changed_fields {
+            println!("  - {}", field);
+        }
+    }
+}
+
 fn print_config_scaffold(report: &ConfigScaffoldReport) {
     println!("SyncSteward Config Scaffold: {:?}", report.outcome);
     println!("{}", report.summary);
@@ -1274,6 +1406,25 @@ fn print_path_samples(title: &str, paths: &[PathBuf]) {
     println!("{}:", title);
     for path in paths {
         println!("  {}", path.display());
+    }
+}
+
+fn load_config_patch(path: &PathBuf) -> Result<ConfigPatch, String> {
+    let raw = std::fs::read_to_string(path)
+        .map_err(|error| format!("read config patch at {}: {error}", path.display()))?;
+    match path.extension().and_then(|value| value.to_str()) {
+        Some("json") => serde_json::from_str(&raw)
+            .map_err(|error| format!("parse JSON config patch at {}: {error}", path.display())),
+        _ => toml::from_str(&raw)
+            .map_err(|error| format!("parse TOML config patch at {}: {error}", path.display()))
+            .or_else(|toml_error| {
+                serde_json::from_str(&raw).map_err(|json_error| {
+                    format!(
+                        "parse config patch at {}: TOML error: {toml_error}; JSON error: {json_error}",
+                        path.display()
+                    )
+                })
+            }),
     }
 }
 

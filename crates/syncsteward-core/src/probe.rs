@@ -5,15 +5,16 @@ use crate::config::{
 use crate::inventory::build_target_inventory;
 use crate::model::{
     ActionOutcome, ActionStep, ActionStepStatus, ActionTarget, AddManagedTargetReport, AlertRecord,
-    AlertReport, AlertSeverity, ApprovedTargetOverview, ArtifactReport, CheckStatus,
-    ConfigScaffoldReport, ControlAction, ControlReport, CycleSkippedTarget, EnsureTargetIdsReport,
-    LaunchAgentStatus, LogAcknowledgeReport, LogSummary, ManagedTargetIdAssignment,
-    ManagedTargetIdAssignmentReason, NotifyAlertsReport, OverviewReport, PolicySummary,
-    PreflightCheck, PreflightReport, RecentTargetRunSummary, RelocateManagedTargetReport,
-    RemoteStatus, RunCycleReport, RunnerAgentAction, RunnerAgentControlReport,
-    RunnerAgentStatusReport, RunnerCycleSummary, RunnerOverview, RunnerTickReport,
-    RunnerTickSummary, ServiceState, StatusReport, TargetBlocker, TargetCheckReport,
-    TargetCheckSetReport, TargetEvaluation, TargetHealthOverview, TargetRunReport,
+    AlertReport, AlertSeverity, ApprovedTargetOverview, ArtifactReport, CheckStatus, ConfigPatch,
+    ConfigScaffoldReport, ConfigSchemaReport, ConfigSnapshotReport, ConfigUpdateReport,
+    ControlAction, ControlReport, CycleSkippedTarget, EnsureTargetIdsReport, LaunchAgentStatus,
+    LogAcknowledgeReport, LogSummary, ManagedTargetIdAssignment, ManagedTargetIdAssignmentReason,
+    NotifyAlertsReport, OverviewReport, PolicySummary, PreflightCheck, PreflightReport,
+    RecentTargetRunSummary, RelocateManagedTargetReport, RemoteStatus, RunCycleReport,
+    RunnerAgentAction, RunnerAgentControlReport, RunnerAgentStatusReport, RunnerCycleSummary,
+    RunnerOverview, RunnerTickReport, RunnerTickSummary, ServiceState, StatusReport, TargetBlocker,
+    TargetCheckReport, TargetCheckSetReport, TargetEvaluation, TargetHealthOverview,
+    TargetRunReport,
 };
 use crate::state::{
     AlertNotificationState, AppState, RunnerCycleState, RunnerTickState, TargetRunState,
@@ -21,6 +22,7 @@ use crate::state::{
     save_runner_cycle, save_runner_tick, save_target_run,
 };
 use anyhow::{Result, anyhow};
+use schemars::schema_for;
 use serde::Serialize;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
@@ -1244,6 +1246,109 @@ pub fn acknowledge_latest_log(config_path: Option<&Path>) -> Result<LogAcknowled
     })
 }
 
+pub fn config_snapshot(config_path: Option<&Path>) -> Result<ConfigSnapshotReport> {
+    let loaded = load_config(config_path)?;
+    let config_source = loaded.source.description();
+    let path = match config_path {
+        Some(path) => Some(expand_path(path)),
+        None => match &loaded.source {
+            crate::config::ConfigSource::Explicit(path)
+            | crate::config::ConfigSource::DefaultFile(path) => Some(path.clone()),
+            crate::config::ConfigSource::BuiltInDefaults => None,
+        },
+    };
+
+    Ok(ConfigSnapshotReport {
+        config_source,
+        path,
+        config: loaded.config,
+    })
+}
+
+pub fn config_schema(config_path: Option<&Path>) -> Result<ConfigSchemaReport> {
+    let loaded = load_config(config_path)?;
+    let schema = schema_for!(AppConfig);
+    Ok(ConfigSchemaReport {
+        config_source: loaded.source.description(),
+        schema: serde_json::to_value(schema)?,
+    })
+}
+
+pub fn update_config(
+    config_path: Option<&Path>,
+    patch: ConfigPatch,
+    dry_run: bool,
+) -> Result<ConfigUpdateReport> {
+    let output_path = config_path
+        .map(expand_path)
+        .unwrap_or_else(default_config_path);
+    let existed = output_path.exists();
+    let loaded = if existed {
+        load_config(Some(output_path.as_path()))?
+    } else {
+        crate::config::LoadedConfig {
+            config: normalize_app_config(AppConfig::default())?,
+            source: crate::config::ConfigSource::BuiltInDefaults,
+        }
+    };
+    let path_display = output_path.display().to_string();
+
+    let original = loaded.config.clone();
+    let mut config = original.clone();
+    let mut changed_fields = Vec::new();
+    apply_config_patch(&mut config, patch, &mut changed_fields);
+    let normalized = normalize_app_config(config)?;
+
+    if normalized == original {
+        return Ok(ConfigUpdateReport {
+            config_source: loaded.source.description(),
+            path: output_path,
+            dry_run,
+            created: false,
+            outcome: ActionOutcome::NoOp,
+            summary: if dry_run {
+                "dry run confirmed config already matches the requested values".to_string()
+            } else {
+                "config already matches the requested values".to_string()
+            },
+            changed_fields,
+            config: normalized,
+        });
+    }
+
+    if !dry_run {
+        if let Some(parent) = output_path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let encoded = toml::to_string_pretty(&normalized)?;
+        fs::write(&output_path, encoded)?;
+    }
+
+    Ok(ConfigUpdateReport {
+        config_source: loaded.source.description(),
+        path: output_path.clone(),
+        dry_run,
+        created: !existed && !dry_run,
+        outcome: ActionOutcome::Success,
+        summary: if dry_run {
+            if existed {
+                format!("dry run would update config at {}", path_display)
+            } else {
+                format!(
+                    "dry run would create config at {} from built-in defaults",
+                    path_display
+                )
+            }
+        } else if existed {
+            format!("updated config at {}", path_display)
+        } else {
+            format!("created config at {}", path_display)
+        },
+        changed_fields,
+        config: normalized,
+    })
+}
+
 pub fn scaffold_config(config_path: Option<&Path>, force: bool) -> Result<ConfigScaffoldReport> {
     let output_path = config_path
         .map(expand_path)
@@ -1561,6 +1666,133 @@ fn write_config(path: &Path, config: AppConfig) -> Result<AppConfig> {
     let encoded = toml::to_string_pretty(&normalized)?;
     fs::write(path, encoded)?;
     Ok(normalized)
+}
+
+fn apply_config_patch(
+    config: &mut AppConfig,
+    patch: ConfigPatch,
+    changed_fields: &mut Vec<String>,
+) {
+    if let Some(value) = patch.launch_agent_label {
+        config.launch_agent_label = value;
+        changed_fields.push("launch_agent_label".to_string());
+    }
+    if let Some(value) = patch.launch_agent_path {
+        config.launch_agent_path = value;
+        changed_fields.push("launch_agent_path".to_string());
+    }
+    if let Some(value) = patch.sync_script_path {
+        config.sync_script_path = value;
+        changed_fields.push("sync_script_path".to_string());
+    }
+    if let Some(value) = patch.rclone_log_dir {
+        config.rclone_log_dir = value;
+        changed_fields.push("rclone_log_dir".to_string());
+    }
+    if let Some(value) = patch.ssh_key_path {
+        config.ssh_key_path = value;
+        changed_fields.push("ssh_key_path".to_string());
+    }
+    if let Some(value) = patch.sync_filter_path {
+        config.sync_filter_path = value;
+        changed_fields.push("sync_filter_path".to_string());
+    }
+    if let Some(value) = patch.memloft_filter_path {
+        config.memloft_filter_path = value;
+        changed_fields.push("memloft_filter_path".to_string());
+    }
+    if let Some(value) = patch.legacy_lock_path {
+        config.legacy_lock_path = value;
+        changed_fields.push("legacy_lock_path".to_string());
+    }
+    if let Some(value) = patch.audit_log_path {
+        config.audit_log_path = value;
+        changed_fields.push("audit_log_path".to_string());
+    }
+    if let Some(value) = patch.state_path {
+        config.state_path = value;
+        changed_fields.push("state_path".to_string());
+    }
+    if let Some(remote) = patch.remote {
+        if let Some(value) = remote.ssh_user {
+            config.remote.ssh_user = value;
+            changed_fields.push("remote.ssh_user".to_string());
+        }
+        if let Some(value) = remote.preferred_hosts {
+            config.remote.preferred_hosts = value;
+            changed_fields.push("remote.preferred_hosts".to_string());
+        }
+        if let Some(value) = remote.onedrive_service {
+            config.remote.onedrive_service = value;
+            changed_fields.push("remote.onedrive_service".to_string());
+        }
+    }
+    if let Some(scan) = patch.scan {
+        if let Some(value) = scan.roots {
+            config.scan.roots = value;
+            changed_fields.push("scan.roots".to_string());
+        }
+        if let Some(value) = scan.max_examples {
+            config.scan.max_examples = value;
+            changed_fields.push("scan.max_examples".to_string());
+        }
+    }
+    if let Some(value) = patch.managed_targets {
+        config.managed_targets = value;
+        changed_fields.push("managed_targets".to_string());
+    }
+    if let Some(value) = patch.alerts {
+        config.alerts = value;
+        changed_fields.push("alerts".to_string());
+    }
+    if let Some(runner) = patch.runner {
+        if let Some(value) = runner.approved_targets {
+            config.runner.approved_targets = value;
+            changed_fields.push("runner.approved_targets".to_string());
+        }
+        if let Some(value) = runner.cycle_interval_minutes {
+            config.runner.cycle_interval_minutes = value;
+            changed_fields.push("runner.cycle_interval_minutes".to_string());
+        }
+        if let Some(value) = runner.notify_after_cycle {
+            config.runner.notify_after_cycle = value;
+            changed_fields.push("runner.notify_after_cycle".to_string());
+        }
+        if let Some(value) = runner.notify_after_tick {
+            config.runner.notify_after_tick = value;
+            changed_fields.push("runner.notify_after_tick".to_string());
+        }
+        if let Some(launch_agent) = runner.launch_agent {
+            if let Some(value) = launch_agent.label {
+                config.runner.launch_agent.label = value;
+                changed_fields.push("runner.launch_agent.label".to_string());
+            }
+            if let Some(value) = launch_agent.plist_path {
+                config.runner.launch_agent.plist_path = value;
+                changed_fields.push("runner.launch_agent.plist_path".to_string());
+            }
+            if let Some(value) = launch_agent.tick_interval_minutes {
+                config.runner.launch_agent.tick_interval_minutes = value;
+                changed_fields.push("runner.launch_agent.tick_interval_minutes".to_string());
+            }
+            if let Some(value) = launch_agent.stdout_path {
+                config.runner.launch_agent.stdout_path = value;
+                changed_fields.push("runner.launch_agent.stdout_path".to_string());
+            }
+            if let Some(value) = launch_agent.stderr_path {
+                config.runner.launch_agent.stderr_path = value;
+                changed_fields.push("runner.launch_agent.stderr_path".to_string());
+            }
+            if let Some(value) = launch_agent.run_at_load {
+                config.runner.launch_agent.run_at_load = value;
+                changed_fields.push("runner.launch_agent.run_at_load".to_string());
+            }
+        }
+    }
+    if let Some(value) = patch.policy {
+        config.policy = value;
+        changed_fields.push("policy".to_string());
+    }
 }
 
 fn resolve_inventory_target(
@@ -4179,12 +4411,13 @@ mod tests {
         build_recent_target_run_summaries, ensure_target_ids, evaluate_preflight,
         relocate_managed_target, run_spawned_command_with_retry, runner_due_status,
         scheduled_notify_alerts, summarize_command_output, summarize_outcome, target_state_key,
+        update_config,
     };
     use crate::config::{AppConfig, ManagedTarget, PolicyConfig, PolicyMode, load_config};
     use crate::model::{
         AcknowledgedLogSummary, ActionStep, AlertRecord, AlertSeverity, ArtifactReport,
-        CheckStatus, LaunchAgentStatus, PolicySummary, RemoteStatus, ServiceState, StatusReport,
-        SyncTargetRecord,
+        CheckStatus, ConfigPatch, LaunchAgentStatus, PolicySummary, RemoteConfigPatch,
+        RemoteStatus, RunnerConfigPatch, ServiceState, StatusReport, SyncTargetRecord,
     };
     use crate::state::{AlertNotificationState, AppState, TargetRunState};
     use std::fs;
@@ -4551,6 +4784,90 @@ path1 and path2 are out of sync, run --resync to recover\n\
             Some("target-123")
         );
         assert_eq!(loaded.config.managed_targets[0].local_path, relocated_path);
+
+        let _ = fs::remove_dir_all(temp_root);
+    }
+
+    #[test]
+    fn config_update_dry_run_does_not_mutate_file() {
+        let temp_root = std::env::temp_dir().join(format!("syncsteward-test-{}", Uuid::now_v7()));
+        let temp_path = temp_root.join("config.toml");
+        fs::create_dir_all(&temp_root).expect("create temp root");
+
+        let mut config = AppConfig::default();
+        config.launch_agent_label = "com.example.sync".to_string();
+        config.sync_script_path = PathBuf::from("~/bin/cloud-sync.sh");
+        let original = toml::to_string_pretty(&config).expect("serialize config");
+        fs::write(&temp_path, &original).expect("write config");
+
+        let report = update_config(
+            Some(temp_path.as_path()),
+            ConfigPatch {
+                launch_agent_label: Some("com.example.updated".to_string()),
+                ..ConfigPatch::default()
+            },
+            true,
+        )
+        .expect("dry-run config update");
+
+        assert!(report.dry_run);
+        assert_eq!(report.outcome, ActionOutcome::Success);
+        assert_eq!(report.config.launch_agent_label, "com.example.updated");
+        assert_eq!(
+            fs::read_to_string(&temp_path).expect("read config"),
+            original
+        );
+
+        let loaded = load_config(Some(temp_path.as_path())).expect("reload config");
+        assert_eq!(loaded.config.launch_agent_label, "com.example.sync");
+
+        let _ = fs::remove_dir_all(temp_root);
+    }
+
+    #[test]
+    fn config_update_applies_patch_and_persists() {
+        let temp_root = std::env::temp_dir().join(format!("syncsteward-test-{}", Uuid::now_v7()));
+        let temp_path = temp_root.join("config.toml");
+        fs::create_dir_all(&temp_root).expect("create temp root");
+
+        let mut config = AppConfig::default();
+        config.runner.cycle_interval_minutes = 60;
+        let original = toml::to_string_pretty(&config).expect("serialize config");
+        fs::write(&temp_path, &original).expect("write config");
+
+        let report = update_config(
+            Some(temp_path.as_path()),
+            ConfigPatch {
+                runner: Some(RunnerConfigPatch {
+                    cycle_interval_minutes: Some(30),
+                    notify_after_cycle: Some(false),
+                    ..RunnerConfigPatch::default()
+                }),
+                remote: Some(RemoteConfigPatch {
+                    ssh_user: Some("deaton".to_string()),
+                    ..RemoteConfigPatch::default()
+                }),
+                ..ConfigPatch::default()
+            },
+            false,
+        )
+        .expect("update config");
+
+        assert_eq!(report.outcome, ActionOutcome::Success);
+        assert!(!report.dry_run);
+        assert_eq!(
+            report.changed_fields,
+            vec![
+                "remote.ssh_user",
+                "runner.cycle_interval_minutes",
+                "runner.notify_after_cycle",
+            ]
+        );
+
+        let loaded = load_config(Some(temp_path.as_path())).expect("reload config");
+        assert_eq!(loaded.config.runner.cycle_interval_minutes, 30);
+        assert!(!loaded.config.runner.notify_after_cycle);
+        assert_eq!(loaded.config.remote.ssh_user, "deaton");
 
         let _ = fs::remove_dir_all(temp_root);
     }

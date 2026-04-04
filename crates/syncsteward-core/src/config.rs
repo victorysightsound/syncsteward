@@ -6,7 +6,7 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]
 pub struct AppConfig {
     pub launch_agent_label: String,
     pub launch_agent_path: PathBuf,
@@ -35,20 +35,20 @@ pub struct AppConfig {
     pub policy: PolicyConfig,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]
 pub struct RemoteConfig {
     pub ssh_user: String,
     pub preferred_hosts: Vec<String>,
     pub onedrive_service: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]
 pub struct ScanConfig {
     pub roots: Vec<PathBuf>,
     pub max_examples: usize,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]
 pub struct ManagedTarget {
     #[serde(default)]
     pub target_id: Option<String>,
@@ -60,7 +60,7 @@ pub struct ManagedTarget {
     pub rationale: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]
 pub struct AlertConfig {
     #[serde(default = "default_stale_success_after_hours")]
     pub stale_success_after_hours: u64,
@@ -72,7 +72,7 @@ pub struct AlertConfig {
     pub recovery_notifications: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]
 pub struct RunnerConfig {
     #[serde(default)]
     pub approved_targets: Vec<String>,
@@ -86,7 +86,7 @@ pub struct RunnerConfig {
     pub launch_agent: RunnerLaunchAgentConfig,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]
 pub struct RunnerLaunchAgentConfig {
     #[serde(default = "default_runner_launch_agent_label")]
     pub label: String,
@@ -102,7 +102,7 @@ pub struct RunnerLaunchAgentConfig {
     pub run_at_load: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]
 pub struct PolicyConfig {
     #[serde(default)]
     pub folders: Vec<FolderPolicy>,
@@ -114,7 +114,7 @@ pub struct PolicyConfig {
     pub target_snapshots: Vec<TargetSnapshot>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]
 pub struct FolderPolicy {
     pub path: PathBuf,
     pub mode: PolicyMode,
@@ -122,14 +122,14 @@ pub struct FolderPolicy {
     pub label: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]
 pub struct FileClassPolicy {
     pub class: FileClass,
     pub mode: PolicyMode,
     pub patterns: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]
 pub struct TargetExclusion {
     pub target: String,
     pub patterns: Vec<String>,
@@ -137,7 +137,7 @@ pub struct TargetExclusion {
     pub rationale: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]
 pub struct TargetSnapshot {
     pub target: String,
     pub sqlite_paths: Vec<PathBuf>,

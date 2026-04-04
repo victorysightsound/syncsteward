@@ -9,7 +9,8 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use std::path::PathBuf;
 use syncsteward_core::{
-    ActionTarget, AddManagedTargetReport, AlertReport, ConfigScaffoldReport, ControlReport,
+    ActionTarget, AddManagedTargetReport, AlertReport, ConfigPatch, ConfigScaffoldReport,
+    ConfigSchemaReport, ConfigSnapshotReport, ConfigUpdateReport, ControlReport,
     EnsureTargetIdsReport, LogAcknowledgeReport, NotifyAlertsReport, OverviewReport, PolicyMode,
     PreflightReport, RelocateManagedTargetReport, RunCycleReport, RunnerAgentControlReport,
     RunnerAgentStatusReport, RunnerTickReport, StatusReport, SyncTargetInventoryReport,
@@ -17,12 +18,13 @@ use syncsteward_core::{
     acknowledge_latest_log as core_acknowledge_latest_log,
     add_managed_target as core_add_managed_target, alerts as core_alerts,
     check_target as core_check_target, check_targets as core_check_targets,
+    config_schema as core_config_schema, config_snapshot as core_config_snapshot,
     ensure_target_ids as core_ensure_target_ids, install_runner_agent as core_install_runner_agent,
     notify_alerts as core_notify_alerts, overview as core_overview, pause, preflight,
     relocate_managed_target as core_relocate_managed_target, resume, run_cycle as core_run_cycle,
     run_target as core_run_target, runner_agent_status as core_runner_agent_status,
     runner_tick as core_runner_tick, scaffold_config as core_scaffold_config, status, targets,
-    uninstall_runner_agent as core_uninstall_runner_agent,
+    uninstall_runner_agent as core_uninstall_runner_agent, update_config as core_update_config,
 };
 
 type McpResult<T> = Result<Json<T>, String>;
@@ -72,6 +74,13 @@ struct RunnerAgentInstallRequest {
 struct RunnerAgentUninstallRequest {
     #[serde(default)]
     keep_plist: bool,
+}
+
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+struct ConfigUpdateRequest {
+    patch: ConfigPatch,
+    #[serde(default)]
+    dry_run: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -314,6 +323,47 @@ impl SyncStewardMcpServer {
         let config_path = self.config_path.clone();
         let report = tokio::task::spawn_blocking(move || {
             core_acknowledge_latest_log(config_path.as_deref())
+        })
+        .await
+        .map_err(|error| error.to_string())?
+        .map_err(|error| error.to_string())?;
+        Ok(Json(report))
+    }
+
+    #[tool(
+        description = "Read the normalized SyncSteward config as the current operator state snapshot."
+    )]
+    async fn config(&self) -> McpResult<ConfigSnapshotReport> {
+        let config_path = self.config_path.clone();
+        let report =
+            tokio::task::spawn_blocking(move || core_config_snapshot(config_path.as_deref()))
+                .await
+                .map_err(|error| error.to_string())?
+                .map_err(|error| error.to_string())?;
+        Ok(Json(report))
+    }
+
+    #[tool(description = "Read the generated JSON schema for the SyncSteward config model.")]
+    async fn config_schema(&self) -> McpResult<ConfigSchemaReport> {
+        let config_path = self.config_path.clone();
+        let report =
+            tokio::task::spawn_blocking(move || core_config_schema(config_path.as_deref()))
+                .await
+                .map_err(|error| error.to_string())?
+                .map_err(|error| error.to_string())?;
+        Ok(Json(report))
+    }
+
+    #[tool(
+        description = "Update SyncSteward config from a structured patch. Supports dry-run mode for validation without writing."
+    )]
+    async fn config_set(
+        &self,
+        Parameters(request): Parameters<ConfigUpdateRequest>,
+    ) -> McpResult<ConfigUpdateReport> {
+        let config_path = self.config_path.clone();
+        let report = tokio::task::spawn_blocking(move || {
+            core_update_config(config_path.as_deref(), request.patch, request.dry_run)
         })
         .await
         .map_err(|error| error.to_string())?

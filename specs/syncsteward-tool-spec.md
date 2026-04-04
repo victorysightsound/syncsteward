@@ -442,6 +442,62 @@ Supports:
 - human output
 - JSON output
 
+### `syncsteward config`
+
+Read the normalized SyncSteward config as the current operator state snapshot.
+
+Outputs:
+
+- config source
+- config path, when applicable
+- full normalized config object
+
+Supports:
+
+- human output
+- JSON output
+
+### `syncsteward config-schema`
+
+Read the generated JSON schema for the SyncSteward config model.
+
+Outputs:
+
+- config source
+- JSON schema for the core config model
+
+Supports:
+
+- human output
+- JSON output
+
+### `syncsteward config-set`
+
+Update SyncSteward config from a structured patch file without hand-editing the full file.
+
+Outputs:
+
+- config source
+- config path
+- dry-run flag
+- created flag
+- changed fields
+- resulting normalized config object
+
+Rules:
+
+- accepts a TOML or JSON patch file
+- supports dry-run validation without writing
+- only writes changed fields into the config file
+- keeps normalization and path expansion centralized in the core config layer
+
+Supports:
+
+- `--patch-file`
+- `--dry-run`
+- human output
+- JSON output
+
 ### `syncsteward scaffold-config`
 
 Write a real SyncSteward config file from the current target inventory and recommended policies.
@@ -575,6 +631,18 @@ Record the same historical-log baseline acknowledgement exposed by the CLI.
 ### `scaffold_config`, `scaffold_config_force`
 
 Write the same config scaffold exposed by the CLI, with a separate force-overwrite variant for MCP.
+
+### `config`
+
+Read the same normalized config snapshot exposed by the CLI.
+
+### `config_schema`
+
+Read the same generated config schema exposed by the CLI.
+
+### `config_set`
+
+Apply the same structured config patch exposed by the CLI, including dry-run validation.
 
 ### `ensure_target_ids`
 

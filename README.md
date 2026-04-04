@@ -144,6 +144,12 @@ SyncSteward can now mutate that managed-target config directly:
 - `add-managed-target` registers a new curated path and assigns its durable ID immediately
 - `relocate-managed-target` updates a managed target by ID, name, or current path while preserving the same durable ID and run history
 
+The core config is also now first-class:
+
+- `config` reads the normalized operator config snapshot
+- `config-schema` exposes the JSON schema for the config model
+- `config-set` applies structured config patches, including dry-run validation
+
 ## Approved Runner
 
 SyncSteward now has a config-backed cycle command for the approved healthy subset.
@@ -181,6 +187,9 @@ cargo run -p syncsteward-cli -- runner-agent-status
 cargo run -p syncsteward-cli -- install-runner-agent
 cargo run -p syncsteward-cli -- uninstall-runner-agent --keep-plist
 cargo run -p syncsteward-cli -- acknowledge-latest-log
+cargo run -p syncsteward-cli -- config
+cargo run -p syncsteward-cli -- config-schema
+cargo run -p syncsteward-cli -- config-set --patch-file ~/syncsteward-config-patch.toml --dry-run
 cargo run -p syncsteward-cli -- scaffold-config
 cargo run -p syncsteward-cli -- ensure-target-ids
 cargo run -p syncsteward-cli -- add-managed-target --name Notes/Archive --local-path ~/Notes/Archive --remote-path OneDrive/Notes/Archive
