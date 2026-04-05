@@ -1,6 +1,6 @@
 use crate::config::{
     AlertConfig, AppConfig, FileClassPolicy, FolderPolicy, ManagedTarget, PolicyConfig,
-    TargetExclusion, TargetSnapshot,
+    RcloneSshMode, RemoteServiceScope, TargetExclusion, TargetSnapshot, VerificationMode,
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -12,6 +12,7 @@ pub struct StatusReport {
     pub policy: PolicySummary,
     pub launch_agent: LaunchAgentStatus,
     pub runner_agent: LaunchAgentStatus,
+    pub active_target_operation: Option<ActiveTargetOperationSummary>,
     pub remote: RemoteStatus,
     pub artifacts: ArtifactReport,
     pub acknowledged_log: Option<AcknowledgedLogSummary>,
@@ -35,6 +36,7 @@ pub struct ConfigSchemaReport {
 pub struct ConfigUpdateReport {
     pub config_source: String,
     pub path: PathBuf,
+    pub backup_path: Option<PathBuf>,
     pub dry_run: bool,
     pub created: bool,
     pub outcome: ActionOutcome,
@@ -69,8 +71,39 @@ pub struct RunnerOverview {
     pub due: bool,
     pub last_live_cycle_finished_at_unix_ms: Option<u128>,
     pub next_due_at_unix_ms: Option<u128>,
+    pub active_cycle: Option<RunnerActiveCycleSummary>,
     pub last_cycle: Option<RunnerCycleSummary>,
     pub last_tick: Option<RunnerTickSummary>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct RunnerActiveCycleSummary {
+    pub dry_run: bool,
+    pub started_at_unix_ms: u128,
+    pub current_target_selector: Option<String>,
+    pub current_target_name: Option<String>,
+    pub current_target_started_at_unix_ms: Option<u128>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum TargetOperationKind {
+    Run,
+    Verify,
+    Repair,
+    Rebaseline,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ActiveTargetOperationSummary {
+    pub kind: TargetOperationKind,
+    pub dry_run: bool,
+    pub started_at_unix_ms: u128,
+    pub process_id: Option<u32>,
+    pub selector: String,
+    pub target_name: String,
+    pub target_id: Option<String>,
+    pub local_path: PathBuf,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -104,6 +137,7 @@ pub struct TargetHealthOverview {
     pub blocked_target_count: usize,
     pub ready_approved_target_count: usize,
     pub live_success_target_count: usize,
+    pub verified_target_count: usize,
     pub chronic_failure_target_count: usize,
 }
 
@@ -114,6 +148,7 @@ pub struct ChronicFailureOverview {
     pub local_path: PathBuf,
     pub consecutive_failure_count: u32,
     pub outcome: ActionOutcome,
+    pub last_failure_class: Option<FailureClass>,
     pub summary: String,
 }
 
@@ -135,6 +170,12 @@ pub struct RecentTargetRunSummary {
     pub outcome: ActionOutcome,
     pub finished_at_unix_ms: u128,
     pub last_success_at_unix_ms: Option<u128>,
+    pub last_verified_at_unix_ms: Option<u128>,
+    pub last_full_verified_at_unix_ms: Option<u128>,
+    pub last_verification_mode: Option<VerificationMode>,
+    pub last_failure_class: Option<FailureClass>,
+    pub last_repair_at_unix_ms: Option<u128>,
+    pub last_rebaseline_at_unix_ms: Option<u128>,
     pub summary: String,
 }
 
@@ -193,7 +234,40 @@ pub struct TargetRunReport {
     pub summary: String,
     pub preflight_ready: bool,
     pub evaluation: TargetEvaluation,
+    pub verified_at_unix_ms: Option<u128>,
+    pub verification_mode: Option<VerificationMode>,
+    pub failure_class: Option<FailureClass>,
     pub steps: Vec<ActionStep>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct TargetVerifyReport {
+    pub config_source: String,
+    pub selector: String,
+    pub outcome: ActionOutcome,
+    pub summary: String,
+    pub preflight_ready: bool,
+    pub evaluation: TargetEvaluation,
+    pub verified_at_unix_ms: Option<u128>,
+    pub verification_mode: VerificationMode,
+    pub failure_class: Option<FailureClass>,
+    pub steps: Vec<ActionStep>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct TargetRecoveryReport {
+    pub config_source: String,
+    pub selector: String,
+    pub target_name: String,
+    pub action: RecoveryAction,
+    pub dry_run: bool,
+    pub confirmation_required: bool,
+    pub confirmed: bool,
+    pub outcome: ActionOutcome,
+    pub summary: String,
+    pub recovery_steps: Vec<ActionStep>,
+    pub run: Option<TargetRunReport>,
+    pub verification: Option<TargetVerifyReport>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -201,6 +275,7 @@ pub struct AddManagedTargetReport {
     pub outcome: ActionOutcome,
     pub summary: String,
     pub path: PathBuf,
+    pub backup_path: Option<PathBuf>,
     pub target: SyncTargetRecord,
 }
 
@@ -209,6 +284,7 @@ pub struct RelocateManagedTargetReport {
     pub outcome: ActionOutcome,
     pub summary: String,
     pub path: PathBuf,
+    pub backup_path: Option<PathBuf>,
     pub selector: String,
     pub previous_local_path: PathBuf,
     pub previous_remote_path: String,
@@ -223,6 +299,7 @@ pub struct RunCycleReport {
     pub summary: String,
     pub preflight_ready: bool,
     pub approved_target_count: usize,
+    pub coordination_steps: Vec<ActionStep>,
     pub target_runs: Vec<TargetRunReport>,
     pub skipped_targets: Vec<CycleSkippedTarget>,
     pub alerts: Vec<AlertRecord>,
@@ -239,6 +316,36 @@ pub struct PruneStateReport {
     pub removed_count: usize,
     pub remaining_count: usize,
     pub removed_keys: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ArtifactKind {
+    Conflict,
+    SafeBackup,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ArtifactQuarantineRecord {
+    pub kind: ArtifactKind,
+    pub source_path: PathBuf,
+    pub quarantine_path: PathBuf,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ArtifactQuarantineReport {
+    pub config_source: String,
+    pub dry_run: bool,
+    pub outcome: ActionOutcome,
+    pub summary: String,
+    pub selectors: Vec<String>,
+    pub roots_scanned: Vec<PathBuf>,
+    pub quarantine_root: PathBuf,
+    pub manifest_path: Option<PathBuf>,
+    pub conflict_count: usize,
+    pub safe_backup_count: usize,
+    pub moved_count: usize,
+    pub artifacts: Vec<ArtifactQuarantineRecord>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -301,6 +408,17 @@ pub enum AlertSeverity {
     Critical,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum FailureClass {
+    Transport,
+    Auth,
+    Path,
+    Divergence,
+    Snapshot,
+    Unknown,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct SyncTargetRecord {
     pub target_id: Option<String>,
@@ -328,7 +446,7 @@ pub struct TargetBlocker {
     pub detail: String,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum LegacySyncMode {
     Bisync,
@@ -358,6 +476,9 @@ pub struct LaunchAgentStatus {
 pub struct RemoteStatus {
     pub selected_host: Option<String>,
     pub reachable: bool,
+    pub service_name: String,
+    pub service_scope: RemoteServiceScope,
+    pub coordination_enabled: bool,
     pub service_state: ServiceState,
     pub detail: String,
 }
@@ -449,6 +570,13 @@ pub enum ActionOutcome {
     Failed,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum RecoveryAction {
+    Repair,
+    Rebaseline,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ControlReport {
     pub action: ControlAction,
@@ -482,6 +610,7 @@ pub struct ConfigScaffoldReport {
     pub outcome: ActionOutcome,
     pub summary: String,
     pub path: PathBuf,
+    pub backup_path: Option<PathBuf>,
     pub overwritten: bool,
     pub folder_policy_count: usize,
     pub file_class_policy_count: usize,
@@ -518,9 +647,13 @@ pub struct ConfigPatch {
     #[serde(default)]
     pub managed_targets: Option<Vec<ManagedTarget>>,
     #[serde(default)]
+    pub coordination: Option<CoordinationConfigPatch>,
+    #[serde(default)]
     pub alerts: Option<AlertConfig>,
     #[serde(default)]
     pub policy: Option<PolicyConfig>,
+    #[serde(default)]
+    pub verification: Option<VerificationConfigPatch>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
@@ -531,6 +664,28 @@ pub struct RemoteConfigPatch {
     pub preferred_hosts: Option<Vec<String>>,
     #[serde(default)]
     pub onedrive_service: Option<String>,
+    #[serde(default)]
+    pub rclone_ssh_mode: Option<RcloneSshMode>,
+    #[serde(default)]
+    pub onedrive_service_scope: Option<RemoteServiceScope>,
+    #[serde(default)]
+    pub sync_root: Option<String>,
+    #[serde(default)]
+    pub sudo_password_op_reference: Option<String>,
+    #[serde(default)]
+    pub sudo_password_keychain_service: Option<String>,
+    #[serde(default)]
+    pub sudo_password_keychain_account: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+pub struct CoordinationConfigPatch {
+    #[serde(default)]
+    pub pause_remote_on_sync: Option<bool>,
+    #[serde(default)]
+    pub materialize_instruction_links: Option<bool>,
+    #[serde(default)]
+    pub instruction_file_names: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
@@ -571,11 +726,22 @@ pub struct RunnerLaunchAgentConfigPatch {
     pub run_at_load: Option<bool>,
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+pub struct VerificationConfigPatch {
+    #[serde(default)]
+    pub default_mode: Option<VerificationMode>,
+    #[serde(default)]
+    pub sample_file_count: Option<usize>,
+    #[serde(default)]
+    pub full_after_hours: Option<u64>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct EnsureTargetIdsReport {
     pub outcome: ActionOutcome,
     pub summary: String,
     pub path: PathBuf,
+    pub backup_path: Option<PathBuf>,
     pub assigned_count: usize,
     pub preserved_count: usize,
     pub assignments: Vec<ManagedTargetIdAssignment>,

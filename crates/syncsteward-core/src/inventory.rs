@@ -1,8 +1,8 @@
-use crate::config::{AppConfig, PolicyMode, load_config};
+use crate::config::{AppConfig, PolicyMode, current_home_dir, load_config};
 use crate::model::{LegacySyncMode, SyncTargetInventoryReport, SyncTargetRecord};
 use anyhow::{Context, Result, bail};
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 pub fn targets(config_path: Option<&Path>) -> Result<SyncTargetInventoryReport> {
     let loaded = load_config(config_path)?;
@@ -13,6 +13,15 @@ pub fn targets(config_path: Option<&Path>) -> Result<SyncTargetInventoryReport> 
 pub(crate) fn build_target_inventory(
     config: &AppConfig,
     config_source: String,
+) -> Result<SyncTargetInventoryReport> {
+    let home_dir = current_home_dir();
+    build_target_inventory_with_home(config, config_source, &home_dir)
+}
+
+fn build_target_inventory_with_home(
+    config: &AppConfig,
+    config_source: String,
+    home_dir: &Path,
 ) -> Result<SyncTargetInventoryReport> {
     let script_path = config.sync_script_path.clone();
     let mut targets = Vec::new();
@@ -28,11 +37,7 @@ pub(crate) fn build_target_inventory(
             .with_context(|| format!("parse BACKUP_FOLDERS in {}", script_path.display()))?;
 
         for folder in bisync_folders {
-            let local_path = PathBuf::from(format!(
-                "{}/{}",
-                std::env::var("HOME").unwrap_or_default(),
-                folder
-            ));
+            let local_path = home_dir.join(&folder);
             let (recommended_mode, rationale) =
                 recommend_policy(&folder, LegacySyncMode::Bisync, &local_path);
             targets.push(SyncTargetRecord {
@@ -51,11 +56,7 @@ pub(crate) fn build_target_inventory(
             let (local_name, remote_name) = mapping
                 .split_once(':')
                 .ok_or_else(|| anyhow::anyhow!("invalid BACKUP_FOLDERS mapping: {mapping}"))?;
-            let local_path = PathBuf::from(format!(
-                "{}/{}",
-                std::env::var("HOME").unwrap_or_default(),
-                local_name
-            ));
+            let local_path = home_dir.join(local_name);
             let (recommended_mode, rationale) =
                 recommend_policy(local_name, LegacySyncMode::BackupOneWay, &local_path);
             targets.push(SyncTargetRecord {
@@ -225,7 +226,11 @@ fn find_configured_mode(config: &AppConfig, local_path: &Path) -> Option<PolicyM
 
 #[cfg(test)]
 mod tests {
-    use super::parse_array;
+    use super::{build_target_inventory, build_target_inventory_with_home, parse_array};
+    use crate::config::{AppConfig, ManagedTarget};
+    use crate::model::LegacySyncMode;
+    use std::fs;
+    use std::path::PathBuf;
 
     #[test]
     fn parses_shell_arrays_with_comments() {
@@ -246,5 +251,98 @@ BACKUP_FOLDERS=(
 
         assert_eq!(bisync, vec!["Notes", "Desktop", "Books"]);
         assert_eq!(backup, vec![".memloft:.memloft"]);
+    }
+
+    #[test]
+    fn falls_back_to_managed_targets_when_legacy_script_is_missing() {
+        let temp_root = std::env::temp_dir().join(format!(
+            "syncsteward-inventory-test-{}",
+            uuid::Uuid::now_v7()
+        ));
+        let state_path = temp_root.join("state.json");
+        fs::create_dir_all(&temp_root).expect("create temp root");
+
+        let mut config = AppConfig::default();
+        config.sync_script_path = temp_root.join("missing-cloud-sync.sh");
+        config.state_path = state_path;
+        config.managed_targets = vec![ManagedTarget {
+            target_id: Some("managed-1".to_string()),
+            name: "Notes/Personal".to_string(),
+            local_path: PathBuf::from("/Users/example/Notes/Personal"),
+            remote_path: "OneDrive/Notes/Personal".to_string(),
+            mode: crate::config::PolicyMode::BackupOnly,
+            rationale: Some("managed target fallback".to_string()),
+        }];
+
+        let report = build_target_inventory(&config, "test config".to_string()).expect("inventory");
+        assert!(!report.legacy_inventory_available);
+        assert_eq!(report.targets.len(), 1);
+        assert_eq!(report.targets[0].legacy_mode, LegacySyncMode::Managed);
+
+        let _ = fs::remove_dir_all(temp_root);
+    }
+
+    #[test]
+    fn errors_when_no_legacy_script_and_no_managed_targets_exist() {
+        let temp_root = std::env::temp_dir().join(format!(
+            "syncsteward-inventory-test-{}",
+            uuid::Uuid::now_v7()
+        ));
+        fs::create_dir_all(&temp_root).expect("create temp root");
+
+        let mut config = AppConfig::default();
+        config.sync_script_path = temp_root.join("missing-cloud-sync.sh");
+        config.managed_targets.clear();
+
+        let error =
+            build_target_inventory(&config, "test config".to_string()).expect_err("inventory");
+        assert!(error.to_string().contains("sync script not found"));
+
+        let _ = fs::remove_dir_all(temp_root);
+    }
+
+    #[test]
+    fn legacy_inventory_uses_supplied_home_dir() {
+        let temp_root = std::env::temp_dir().join(format!(
+            "syncsteward-inventory-test-{}",
+            uuid::Uuid::now_v7()
+        ));
+        fs::create_dir_all(&temp_root).expect("create temp root");
+        let script_path = temp_root.join("cloud-sync.sh");
+        fs::write(
+            &script_path,
+            "BISYNC_FOLDERS=(\n  \"Books\"\n)\n\nBACKUP_FOLDERS=(\n  \".memloft:.memloft\"\n)\n",
+        )
+        .expect("write script");
+
+        let mut config = AppConfig::default();
+        config.sync_script_path = script_path;
+        config.managed_targets.clear();
+
+        let report = build_target_inventory_with_home(
+            &config,
+            "test config".to_string(),
+            PathBuf::from("/Users/syncsteward").as_path(),
+        )
+        .expect("inventory");
+
+        let books = report
+            .targets
+            .iter()
+            .find(|target| target.name == "Books")
+            .expect("books target");
+        let memloft = report
+            .targets
+            .iter()
+            .find(|target| target.name == ".memloft")
+            .expect("memloft target");
+
+        assert_eq!(books.local_path, PathBuf::from("/Users/syncsteward/Books"));
+        assert_eq!(
+            memloft.local_path,
+            PathBuf::from("/Users/syncsteward/.memloft")
+        );
+
+        let _ = fs::remove_dir_all(temp_root);
     }
 }

@@ -27,7 +27,9 @@ Return a full health snapshot:
 - active folder, file-class, target-exclusion, and target-snapshot policy defaults
 - local launch agent state
 - dedicated SyncSteward runner launch-agent state
+- active manual target operation when `run-target`, `verify-target`, `repair-target`, or `rebaseline-target` is still in flight
 - remote host reachability and OneDrive service state
+- remote OneDrive service name, service scope, and whether SyncSteward coordination is enabled
 - conflict and `safeBackup` artifact counts
 - latest sync log summary
 
@@ -35,6 +37,12 @@ Supports:
 
 - human output
 - JSON output
+
+Rules:
+
+- managed-run preflight remains ready when remote OneDrive is active and SyncSteward coordination is enabled
+- managed-run preflight downgrades that remote-active condition to a warning instead of a failure
+- legacy `resume` still uses strict preflight because `com.cloud-sync` cannot coordinate remote OneDrive automatically
 
 ### `syncsteward preflight`
 
@@ -81,8 +89,11 @@ Outputs:
 - generated timestamp
 - preflight readiness plus failing/warning check counts
 - runner cadence, due state, and last cycle/tick summaries
+- active cycle summary when an approved cycle is still in progress
+- active manual target-operation summary when a direct target run, verification, repair, or rebaseline is still in progress
 - target health counts across configured, managed, approved, ready, blocked, and live-success targets
 - approved target resolution/readiness with latest recorded run when available
+- chronic failure summaries for the runner-approved target set
 - recent target-run history sorted newest first
 - active alert list
 
@@ -94,6 +105,7 @@ Supports:
 Rules:
 
 - this is the preferred read surface for dashboard-style UI consumers
+- alert counts in this surface are scoped to runner-approved targets plus any explicitly failing manual run on a non-approved target
 - future native UI shells should consume this contract instead of stitching together multiple health commands on their own
 
 ### `syncsteward check-targets`
@@ -141,6 +153,7 @@ Outputs:
 - config path
 - assigned ID count
 - preserved ID count
+- optional backup path when existing config state was rewritten
 - one assignment record per target that needed a new ID
 
 Rules:
@@ -148,6 +161,7 @@ Rules:
 - only writes when managed targets exist and at least one ID is missing or duplicated
 - keeps existing unique IDs unchanged
 - repairs duplicate managed-target IDs by assigning a fresh ID to the later conflicting target
+- creates a reversible backup before rewriting the config file
 - creates the identity layer needed for future relocate/adopt workflows
 
 Supports:
@@ -167,6 +181,7 @@ Outputs:
 - local path
 - remote path
 - configured mode
+- optional backup path when an existing config file was rewritten
 
 Rules:
 
@@ -174,6 +189,7 @@ Rules:
 - requires the local path to exist and be a directory
 - assigns a durable managed-target ID immediately
 - refuses duplicate target name, local path, or remote path
+- creates a reversible backup before rewriting the config file
 - makes the new target available everywhere a managed target already participates
 
 Supports:
@@ -193,6 +209,7 @@ Outputs:
 - selector used
 - previous local path
 - previous remote path
+- optional backup path when an existing config file was rewritten
 - current target record after relocation
 
 Rules:
@@ -202,6 +219,7 @@ Rules:
 - preserves the durable target ID and run history
 - requires the new local path to exist and be a directory
 - optionally updates the remote path at the same time
+- creates a reversible backup before rewriting the config file
 - returns `no_op` when the requested location already matches the current target
 
 Supports:
@@ -217,6 +235,8 @@ Outputs:
 
 - overall run outcome
 - target evaluation at execution time
+- verified timestamp when live verification succeeds
+- failure class when the run fails after classification
 - structured execution steps
 - dry-run flag
 
@@ -231,8 +251,12 @@ Rules:
 - uses target-specific snapshot rules when a runtime target should upload SQLite backups instead of the live database files
 - resolves external tool paths like `rclone` and `sqlite3` from explicit common locations so launchd-style stripped environments cannot break scheduled execution
 - retries `rclone` sync and copy steps a bounded number of times before recording a hard failure
-- target snapshot rules are selective: they exclude and replace only the listed live database files while other database files in the same target continue through normal backup-only sync
+- target snapshot rules are selective: they exclude and replace only the listed live database files while other database files in the same target continue through normal backup_only sync
 - excludes SQLite sidecars like `*-wal`, `*-shm`, and `*-journal` from direct sync
+- successful live runs automatically verify remote contents before the target is treated as healthy
+- verification reuses the same remote coordination path and snapshot rules as guarded execution
+- when remote OneDrive is active and coordination is enabled, the managed run path pauses the remote service instead of failing preflight
+- failures are classified into transport, auth, path, divergence, snapshot, or unknown
 - records last live target outcome in SyncSteward state
 - does not let dry-run validation overwrite the live target state used by alerts
 - appends a target-run audit record
@@ -240,6 +264,104 @@ Rules:
 Supports:
 
 - `--dry-run`
+- human output
+- JSON output
+
+### `syncsteward verify-target`
+
+Verify one configured backup_only target against the remote store without performing a sync write.
+
+Outputs:
+
+- config source
+- selector
+- overall verification outcome
+- summary of the verification result
+- preflight readiness at verification time
+- target evaluation at verification time
+- verified timestamp on success
+- failure class on failure
+- structured verification steps
+
+Rules:
+
+- initial support is limited to `backup_only` targets
+- uses the same preflight, legacy lock, remote-host selection, remote pause/resume, and instruction-file materialization path as `run-target`
+- verifies remote contents with `rclone check`
+- for snapshot-backed targets, verifies non-database files against the live tree and verifies SQLite snapshot files against fresh local snapshots
+- records verification history in audit and target state
+
+Supports:
+
+- human output
+- JSON output
+
+### `syncsteward repair-target`
+
+Run one explicit repair flow for a configured backup_only target.
+
+Outputs:
+
+- config source
+- selector
+- target name
+- recovery action
+- dry-run flag
+- whether confirmation was required
+- whether the action was confirmed
+- overall recovery outcome
+- summary of the recovery result
+- recovery steps
+- nested guarded target-run report when repair execution actually ran
+- nested verification report when verification steps were part of the recovery
+- targeted divergence-remediation details when verification found structured mismatches
+
+Rules:
+
+- initial support is limited to `backup_only` targets
+- reuses the guarded `run-target` execution path for incremental sync, including live verification
+- is non-destructive: it does not clear the remote target before syncing
+- when verification fails with divergence, collects structured mismatch reports, rewrites only mismatched or destination-missing source files, removes remote-only extras, and re-verifies
+- records recovery audit history and last repair time when the live repair succeeds
+
+Supports:
+
+- `--dry-run`
+- human output
+- JSON output
+
+### `syncsteward rebaseline-target`
+
+Run one explicit rebaseline flow for a configured backup_only target.
+
+Outputs:
+
+- config source
+- selector
+- target name
+- recovery action
+- dry-run flag
+- whether confirmation was required
+- whether the action was confirmed
+- overall recovery outcome
+- summary of the recovery result
+- recovery steps
+- nested guarded target-run report when rebaseline execution actually ran
+- nested verification report when verification steps were part of the recovery
+
+Rules:
+
+- initial support is limited to `backup_only` targets
+- dry-run validates the rebaseline path without destructive remote changes
+- live execution requires explicit confirmation with `--yes` in CLI or `confirm=true` in MCP
+- rebaseline clears the remote target contents before syncing the current local tree
+- runs the same guarded sync and verification path after the remote rebuild step
+- records recovery audit history and last rebaseline time when the live rebaseline succeeds
+
+Supports:
+
+- `--dry-run`
+- `--yes` for live CLI execution
 - human output
 - JSON output
 
@@ -291,6 +413,7 @@ Outputs:
 - last live cycle completion timestamp
 - next due timestamp, when available
 - preflight readiness
+- whether another approved cycle is already in progress
 - optional nested cycle report when a cycle was due
 - current alert set after the tick
 - optional notification result
@@ -299,8 +422,12 @@ Outputs:
 Rules:
 
 - reads cadence and approved-target settings from `runner.*` config
+- if state still records an active approved cycle from a dead runner process, clears that stale state before deciding whether another cycle is already running
 - runs `run-cycle` only when the approved set is due
 - otherwise returns a safe no-op report with the current alert snapshot
+- when another approved cycle is already running, returns `no_op` and current alerts instead of recording a second blocked cycle attempt
+- scheduler-facing no-op and blocked ticks should still exit successfully so launchd health reflects real command failures instead of expected policy states
+- command retries are selective: transport-style failures replay, while deterministic auth, path, and divergence failures surface immediately
 - may send post-tick alert notifications when enabled in config
 - suppresses repeated notifications for the same unchanged alert set until the configured repeat window expires
 - may send one recovery notification when a previously active alert set clears
@@ -347,6 +474,7 @@ Rules:
 - requires a real SyncSteward config file so the launch agent points at a stable config path
 - writes a dedicated launchd plist for `runner-tick`
 - writes an explicit runner `PATH` so scheduled runs can find `rclone` and related tools even when launchd starts with a minimal default environment
+- uses the configured `remote.rclone_ssh_mode`, with macOS `auto` resolving to external `/usr/bin/ssh` for background-safe `rclone` SFTP transport
 - loads the agent unless `--write-only` is used
 - replaces an already-loaded copy cleanly before bootstrapping the new one
 - keeps the legacy `com.cloud-sync` job separate and unchanged
@@ -394,10 +522,11 @@ Outputs:
 
 Rules:
 
-- executable `backup_only` targets with no live success should alert
-- executable targets with no run history should alert
-- executable targets whose last live success is stale should alert
+- runner-approved `backup_only` targets with no live success should alert
+- runner-approved targets with no run history should alert
+- runner-approved targets whose last live success is stale should alert
 - global preflight failures should surface as critical alerts
+- non-approved managed targets should stay silent unless they have an explicit failing manual run history
 
 Supports:
 
@@ -442,6 +571,34 @@ Supports:
 - human output
 - JSON output
 
+### `syncsteward prune-state`
+
+Remove stale target-run state entries that no longer match any current configured target.
+
+Outputs:
+
+- config source
+- state path
+- dry-run flag
+- overall outcome
+- summary
+- removed entry count
+- remaining entry count
+- removed keys
+
+Rules:
+
+- compares persisted target-run keys against the current explicit inventory
+- removes only state entries that no longer match a live target
+- supports dry-run validation without mutating state
+- is the operator cleanup path for stale target-run history
+
+Supports:
+
+- `--dry-run`
+- human output
+- JSON output
+
 ### `syncsteward config`
 
 Read the normalized SyncSteward config as the current operator state snapshot.
@@ -479,6 +636,7 @@ Outputs:
 
 - config source
 - config path
+- optional backup path when an existing config file was overwritten
 - dry-run flag
 - created flag
 - changed fields
@@ -489,6 +647,8 @@ Rules:
 - accepts a TOML or JSON patch file
 - supports dry-run validation without writing
 - only writes changed fields into the config file
+- creates a timestamped backup before overwriting an existing config file
+- writes atomically through a temporary file so a failed update cannot leave a truncated config behind
 - keeps normalization and path expansion centralized in the core config layer
 
 Supports:
@@ -506,6 +666,7 @@ Outputs:
 
 - config path
 - whether an existing file was overwritten
+- optional backup path when an existing config file was replaced
 - folder policy count
 - file-class policy count
 
@@ -514,6 +675,8 @@ Rules:
 - refuses to overwrite by default
 - `--force` is required to replace an existing config
 - uses existing configured folder modes when refreshing an existing config
+- creates a reversible backup before replacing an existing config file
+- writes the replacement atomically so an interrupted scaffold cannot corrupt config
 
 Supports:
 
@@ -596,6 +759,12 @@ Read the same single-target readiness and blocker view exposed by the CLI.
 
 Run the same guarded single-target execution path exposed by the CLI, including dry-run support.
 
+When the remote OneDrive service is active and coordination is enabled, the run path:
+
+- pauses the remote service before sync work starts
+- normalizes fragile instruction-file symlink chains in the remote sync root
+- resumes the remote service after the run completes or fails
+
 ### `alerts`
 
 Read the same alert evaluation surface exposed by the CLI.
@@ -607,6 +776,12 @@ Send the same guarded local alert notification exposed by the CLI, including dry
 ### `run_cycle`
 
 Run the same approved-target guarded cycle exposed by the CLI, including dry-run support.
+
+When the remote OneDrive service is active and coordination is enabled, the cycle path:
+
+- pauses the remote service once before the approved cycle starts
+- normalizes fragile instruction-file symlink chains in the remote sync root once per cycle
+- resumes the remote service after the cycle completes or fails
 
 ### `runner_tick`
 
@@ -627,6 +802,14 @@ Unload the same dedicated runner launch agent exposed by the CLI, including keep
 ### `acknowledge_latest_log`
 
 Record the same historical-log baseline acknowledgement exposed by the CLI.
+
+### `prune_state`
+
+Remove the same stale target-run state entries exposed by the CLI, including dry-run support.
+
+### `quarantine_artifacts`
+
+Move the same `.conflict*` and `victorystore-safeBackup*` files exposed by the CLI into a timestamped quarantine root, including dry-run support and optional target selectors.
 
 ### `scaffold_config`, `scaffold_config_force`
 
@@ -669,6 +852,5 @@ Run the same guarded resume actions exposed by the CLI.
 Deferred for later waves:
 
 - folder policy editing
-- conflict quarantine moves
 - managed target adopt/detect-move automation beyond explicit relocate
 - UI

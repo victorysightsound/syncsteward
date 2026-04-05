@@ -18,6 +18,7 @@ The app is responsible for:
 
 - sync health inspection
 - guarded preflight checks
+- managed-run preflight that can warn instead of fail when remote OneDrive is active but coordinated
 - conflict and backup artifact detection
 - explicit acknowledgement of historical incident logs after cleanup
 - sync orchestration policy
@@ -37,7 +38,7 @@ The current stack has several failure modes:
 - broad folder-level `rclone bisync` across large personal trees
 - a remote Linux `onedrive` monitor mutating the same tree that `bisync` is targeting
 - no central preflight gate
-- no quarantine workflow for conflict markers
+- conflict and safe-backup artifacts now have a first-class quarantine workflow instead of manual filesystem cleanup
 - no dashboard or alerting for `out of sync` states
 
 ## First Hardening Slice
@@ -65,8 +66,10 @@ SyncSteward loads configuration from either:
 Configuration now carries both operator paths and safety policy:
 
 - launch agent and remote service locations
+- remote OneDrive service scope and coordination behavior
 - log, audit-log, state, filter, and legacy-lock paths
 - scan roots
+- config and state writes are atomic so the control plane can recover cleanly from partial failures
 - explicitly managed targets with durable ID, local path, remote path, mode, and rationale
 - folder policy overrides
 - file-class policy defaults
@@ -108,18 +111,18 @@ The default dangerous-file posture is fail-safe:
 - `*.conflict*` defaults to `hold`
 - `*victorystore-safeBackup*` defaults to `hold`
 
-The first target-specific exclusions protect native Apple libraries inside approved backup-only targets:
+The first target-specific exclusions protect native Apple libraries inside approved `backup_only` targets:
 
 - `Pictures` excludes `Photos Library.photoslibrary`
 - `Music` excludes `Music Library.musiclibrary`
 
-Those bundle exclusions are enforced by SyncSteward itself so backup-only media targets do not depend only on a legacy filter file.
+Those bundle exclusions are enforced by SyncSteward itself so `backup_only` media targets do not depend only on a legacy filter file.
 
 The first target-specific snapshot rule protects `.memloft`:
 
 - SyncSteward syncs non-database files from the live tree through the existing filtered path
 - `memloft.db`, `payroll.db`, and `vault.db` are uploaded from `sqlite3 .backup` snapshots instead of the live files
-- snapshot rules are selective: they replace only the listed live database files, while other database files in the same target still follow normal backup-only file sync
+- snapshot rules are selective: they replace only the listed live database files, while other database files in the same target still follow normal `backup_only` file sync
 - SQLite sidecars like `*-wal`, `*-shm`, and `*-journal` remain excluded globally from direct sync
 
 That keeps runtime SQLite backup coherent without forcing a full local mirror of the `.memloft` tree on every run.
@@ -144,7 +147,7 @@ Those managed targets exist for the transition period where:
 - one or more curated subfolders inside it are safe enough to back up
 - the operator needs those curated paths to behave like first-class targets in inventory, readiness, execution, and alerts
 
-The first practical example is a held top-level `Notes` folder with a separately managed `Notes/Personal` backup-only target.
+The first practical example is a held top-level `Notes` folder with a separately managed `Notes/Personal` `backup_only` target.
 
 Each managed target should also be able to carry a durable ID. That identity is what allows SyncSteward to distinguish:
 
@@ -196,17 +199,19 @@ The next execution layer is also explicit and fail-safe:
 - execution must respect the legacy sync lock so manual runs cannot overlap the old script
 - every target run should append audit history and record last outcome in state
 - execution should retry transient `rclone` transport failures a bounded number of times before recording a hard failure
+- deterministic auth, path, and divergence failures should stop immediately so explicit repair and rebaseline flows can branch into the correct remediation path without replaying the same bad command
 - future relocate/adopt commands should use managed target IDs instead of path-only matching when reconnecting moved target roots
 - add/relocate target mutations should update config through the same guarded control plane instead of forcing manual config edits
 
 Monitoring should build on the same state model rather than inventing a separate tracker:
 
-- active alerts should derive from current preflight plus per-target run history
-- executable targets without any successful live run should surface as alerts
+- active alerts should derive from current preflight plus runner-approved target history, with manual-run failures preserved for non-approved managed targets
+- runner-approved executable targets without any successful live run should surface as alerts
 - stale-success thresholds should be configurable
 - local notifications should summarize active alerts without hiding the underlying details
 - scheduled notifications should suppress unchanged alert sets inside a repeat window and optionally send one recovery notification when the active set clears
 - one composed overview surface should summarize preflight, runner cadence, approved-target readiness, recent target history, and active alerts for CLI, MCP, and future UI consumers
+- the same status and overview contract should expose any currently active manual target operation so long-running verification or recovery work does not look idle
 - the first native macOS shell should consume that overview contract rather than reimplementing status stitching or sync sequencing
 - the first native macOS shell may be installed as a thin local app bundle wrapper that still launches the current dev-built shell and CLI rather than forking a separate desktop logic path
 - the first native macOS shell should stay inside safe operator boundaries by exposing only refresh, runner-agent visibility, dry-run runner actions, and open-log/config affordances while delegating all real work to CLI and MCP surfaces
@@ -216,10 +221,11 @@ The next daemon-ready layer should also stay inside the same guarded model:
 
 - approved targets should be declared explicitly in config rather than inferred at runtime
 - one guarded cycle command should evaluate preflight, hold the legacy sync lock for the full cycle, run only approved executable targets, and then evaluate alerts
-- one scheduled runner-tick command should decide whether the approved cycle is due, execute it only when needed, and otherwise return a safe no-op health result
+- one scheduled `runner-tick` command should decide whether the approved cycle is due, execute it only when needed, and otherwise return a safe no-op health result
+- scheduler-facing `runner-tick` no-op or policy-blocked outcomes should still exit successfully so launchd health reflects actual command failures instead of expected control-plane states
 - SyncSteward should own a dedicated launchd agent for the scheduler path instead of reusing the broad legacy `com.cloud-sync` job
 - future scheduling, menu bar actions, and MCP orchestration should call that cycle command instead of reimplementing sync sequencing
-- future scheduling, menu bar actions, and daemon loops should call the scheduled runner-tick command rather than polling ad hoc target lists
+- future scheduling, menu bar actions, and daemon loops should call the scheduled `runner-tick` command rather than polling ad hoc target lists
 - cycle execution should record per-target outcomes and preserve skipped-selector details when config refers to a target that no longer resolves cleanly
 - dry-run validation should remain observable in audit history without overwriting the live target-run state that drives alerts
 
@@ -230,13 +236,19 @@ The dedicated runner launch agent should:
 - execute `runner-tick` on a shorter wake cadence than the approved-cycle cadence
 - export an explicit tool `PATH` for launchd instead of relying on the stripped default environment
 - allow execution paths to resolve external tools like `rclone` from common system and Homebrew locations before falling back to ambient `PATH`
+- use a background-safe `rclone` transport mode on macOS, defaulting `remote.rclone_ssh_mode = auto` to the external `/usr/bin/ssh` path instead of Go's internal SSH transport
+- clear stale `runner.active_cycle` state when the recorded runner process is gone so interrupted cycles cannot wedge future ticks
 - remain separate from the paused legacy `com.cloud-sync` launch agent during migration
 - be manageable through the same CLI and MCP control plane that owns the rest of the product
 
 ## Planned Waves
 
-1. Health and preflight inspection
-2. Coordinated pause/resume and structured audit logging
-3. Per-folder sync policy, managed subtargets, durable target IDs, managed-target lifecycle commands, config scaffolding, file-class overrides, quarantine management, and approved-target execution
-4. Notifications, escalation, and daemon-ready approved-target cycle orchestration
-5. Menu bar UI and operator workflow polish, starting with a native macOS shell that surfaces overview plus runner status, stays inside safe dry-run/open actions, and continues to call the shared overview/control surfaces
+1. Baseline control surface, config schema, and shared state model
+2. Automatic Victorystore coordination, remote pause/resume, and instruction-file normalization
+3. Inventory, folder policy, managed targets, durable IDs, and relocate/rebaseline flows
+4. Execution, verification, non-destructive repair, confirmed destructive rebaseline, and quarantine handling
+5. Monitoring, alerts, scheduled `runner-tick` execution, and dedicated launch-agent control
+6. Legacy de-risking and removal of any execution dependency on `cloud-sync.sh`
+7. Operator validation, failure drills, and regression coverage
+8. Packaging, support, production hardening, and atomic recovery behavior
+9. UI only after the control plane is proven, with a thin shell that reads the composed overview surface

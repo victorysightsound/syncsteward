@@ -16,6 +16,7 @@ SyncSteward keeps its source-of-truth documentation databases in `.docs/`. Query
 - `.docs/syncsteward_architecture.db`
 - `.docs/syncsteward_tool_spec.db`
 - `.docs/syncsteward_dial_plan.db`
+- `.docs/syncsteward_operator_validation.db`
 - `.docs/workspace.db`
 
 Example queries:

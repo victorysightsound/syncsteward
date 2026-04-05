@@ -2,16 +2,19 @@ use clap::{Parser, Subcommand, ValueEnum};
 use std::path::PathBuf;
 use syncsteward_core::{
     ActionOutcome, ActionStepStatus, ActionTarget, AddManagedTargetReport, AlertReport,
-    AlertSeverity, CheckStatus, ConfigPatch, ConfigScaffoldReport, ConfigSchemaReport,
-    ConfigSnapshotReport, ConfigUpdateReport, ControlReport, EnsureTargetIdsReport,
-    LogAcknowledgeReport, NotifyAlertsReport, OverviewReport, PolicyMode, PreflightReport,
-    PruneStateReport, RelocateManagedTargetReport, RunCycleReport, RunnerAgentControlReport,
-    RunnerAgentStatusReport, RunnerTickReport, StatusReport, SyncTargetInventoryReport,
-    TargetCheckReport, TargetCheckSetReport, TargetRunReport, acknowledge_latest_log,
-    add_managed_target, alerts, check_target, check_targets, config_schema, config_snapshot,
-    ensure_target_ids, install_runner_agent, notify_alerts, overview, pause, preflight,
-    prune_state, relocate_managed_target, resume, run_cycle, run_target, runner_agent_status,
-    runner_tick, scaffold_config, status, targets, uninstall_runner_agent, update_config,
+    AlertSeverity, ArtifactQuarantineReport, CheckStatus, ConfigPatch, ConfigScaffoldReport,
+    ConfigSchemaReport, ConfigSnapshotReport, ConfigUpdateReport, ControlReport,
+    EnsureTargetIdsReport, FailureClass, LogAcknowledgeReport, NotifyAlertsReport, OverviewReport,
+    PolicyMode, PreflightReport, PruneStateReport, RecoveryAction, RelocateManagedTargetReport,
+    RunCycleReport, RunnerAgentControlReport, RunnerAgentStatusReport, RunnerTickReport,
+    StatusReport, SyncTargetInventoryReport, TargetCheckReport, TargetCheckSetReport,
+    TargetOperationKind, TargetRecoveryReport, TargetRunReport, TargetVerifyReport,
+    VerificationMode, acknowledge_latest_log, add_managed_target, alerts, check_target,
+    check_targets, config_schema, config_snapshot, ensure_target_ids, install_runner_agent,
+    notify_alerts, overview, pause, preflight, prune_state, quarantine_artifacts,
+    rebaseline_target, relocate_managed_target, repair_target, resume, run_cycle, run_target,
+    runner_agent_status, runner_tick, scaffold_config, status, targets, uninstall_runner_agent,
+    update_config, verify_target,
 };
 
 #[derive(Debug, Parser)]
@@ -80,6 +83,30 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Verify one configured target against the remote store without performing a sync write.
+    VerifyTarget {
+        target: String,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Run one explicit repair flow for a configured target.
+    RepairTarget {
+        target: String,
+        #[arg(long)]
+        dry_run: bool,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Run one explicit rebaseline flow for a configured target.
+    RebaselineTarget {
+        target: String,
+        #[arg(long)]
+        dry_run: bool,
+        #[arg(long)]
+        yes: bool,
+        #[arg(long)]
+        json: bool,
+    },
     /// Run one guarded cycle for the approved target set in SyncSteward config.
     RunCycle {
         #[arg(long)]
@@ -139,6 +166,14 @@ enum Command {
     },
     /// Prune stale target-run state entries that no longer match any current target.
     PruneState {
+        #[arg(long)]
+        dry_run: bool,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Move .conflict and victorystore-safeBackup artifacts into quarantine so preflight can pass safely.
+    QuarantineArtifacts {
+        targets: Vec<String>,
         #[arg(long)]
         dry_run: bool,
         #[arg(long)]
@@ -382,6 +417,57 @@ fn run() -> i32 {
             }
             action_exit_code(report.outcome)
         }
+        Command::VerifyTarget { target, json } => {
+            let report = match verify_target(cli.config.as_deref(), &target) {
+                Ok(report) => report,
+                Err(error) => return fatal_error(&error.to_string()),
+            };
+            if json {
+                if print_json(&report).is_err() {
+                    return fatal_error("failed to serialize verify-target report as JSON");
+                }
+            } else {
+                print_verify_target(&report);
+            }
+            action_exit_code(report.outcome)
+        }
+        Command::RepairTarget {
+            target,
+            dry_run,
+            json,
+        } => {
+            let report = match repair_target(cli.config.as_deref(), &target, dry_run) {
+                Ok(report) => report,
+                Err(error) => return fatal_error(&error.to_string()),
+            };
+            if json {
+                if print_json(&report).is_err() {
+                    return fatal_error("failed to serialize repair-target report as JSON");
+                }
+            } else {
+                print_target_recovery(&report);
+            }
+            action_exit_code(report.outcome)
+        }
+        Command::RebaselineTarget {
+            target,
+            dry_run,
+            yes,
+            json,
+        } => {
+            let report = match rebaseline_target(cli.config.as_deref(), &target, dry_run, yes) {
+                Ok(report) => report,
+                Err(error) => return fatal_error(&error.to_string()),
+            };
+            if json {
+                if print_json(&report).is_err() {
+                    return fatal_error("failed to serialize rebaseline-target report as JSON");
+                }
+            } else {
+                print_target_recovery(&report);
+            }
+            action_exit_code(report.outcome)
+        }
         Command::RunCycle { dry_run, json } => {
             let report = match run_cycle(cli.config.as_deref(), dry_run) {
                 Ok(report) => report,
@@ -408,7 +494,7 @@ fn run() -> i32 {
             } else {
                 print_runner_tick(&report);
             }
-            action_exit_code(report.outcome)
+            runner_tick_exit_code(report.outcome)
         }
         Command::RunnerAgentStatus { json } => {
             let report = match runner_agent_status(cli.config.as_deref()) {
@@ -529,6 +615,24 @@ fn run() -> i32 {
                 }
             } else {
                 print_prune_state(&report);
+            }
+            action_exit_code(report.outcome)
+        }
+        Command::QuarantineArtifacts {
+            targets,
+            dry_run,
+            json,
+        } => {
+            let report = match quarantine_artifacts(cli.config.as_deref(), &targets, dry_run) {
+                Ok(report) => report,
+                Err(error) => return fatal_error(&error.to_string()),
+            };
+            if json {
+                if print_json(&report).is_err() {
+                    return fatal_error("failed to serialize quarantine-artifacts report as JSON");
+                }
+            } else {
+                print_quarantine_artifacts(&report);
             }
             action_exit_code(report.outcome)
         }
@@ -703,6 +807,27 @@ fn print_overview(report: &OverviewReport) {
     if let Some(next_due) = report.runner.next_due_at_unix_ms {
         println!("  next due at: {}", next_due);
     }
+    if let Some(active_cycle) = &report.runner.active_cycle {
+        println!(
+            "  active cycle: {} started at {}",
+            if active_cycle.dry_run {
+                "dry-run"
+            } else {
+                "live"
+            },
+            active_cycle.started_at_unix_ms
+        );
+        if let Some(name) = &active_cycle.current_target_name {
+            if let Some(selector) = &active_cycle.current_target_selector {
+                println!("    current target: {} ({})", name, selector);
+            } else {
+                println!("    current target: {}", name);
+            }
+        }
+        if let Some(started_at) = active_cycle.current_target_started_at_unix_ms {
+            println!("    current target started at: {}", started_at);
+        }
+    }
     if let Some(last_cycle) = &report.runner.last_cycle {
         println!(
             "  last cycle: {} at {}",
@@ -719,6 +844,22 @@ fn print_overview(report: &OverviewReport) {
         );
         println!("    {}", last_tick.summary);
     }
+    if let Some(operation) = &report.status.active_target_operation {
+        println!(
+            "Active target operation: {} {} started at {}",
+            describe_target_operation_kind(operation.kind),
+            if operation.dry_run {
+                "(dry-run)"
+            } else {
+                "(live)"
+            },
+            operation.started_at_unix_ms
+        );
+        println!(
+            "  target: {} ({})",
+            operation.target_name, operation.selector
+        );
+    }
     println!(
         "Targets: {} total, {} managed, {} ready, {} blocked, {} chronic failures",
         report.targets.total_target_count,
@@ -728,11 +869,12 @@ fn print_overview(report: &OverviewReport) {
         report.targets.chronic_failure_target_count
     );
     println!(
-        "  approved: {} configured, {} resolved, {} ready, {} with live success",
+        "  approved: {} configured, {} resolved, {} ready, {} with live success, {} verified",
         report.targets.approved_target_count,
         report.targets.resolved_approved_target_count,
         report.targets.ready_approved_target_count,
-        report.targets.live_success_target_count
+        report.targets.live_success_target_count,
+        report.targets.verified_target_count
     );
 
     if report.approved_targets.is_empty() {
@@ -767,6 +909,21 @@ fn print_overview(report: &OverviewReport) {
                         last_run.finished_at_unix_ms
                     );
                     println!("    {}", last_run.summary);
+                    if let Some(value) = last_run.last_verified_at_unix_ms {
+                        println!("    verified at: {}", value);
+                    }
+                    if let Some(value) = last_run.last_full_verified_at_unix_ms {
+                        println!("    full verified at: {}", value);
+                    }
+                    if let Some(mode) = last_run.last_verification_mode {
+                        println!(
+                            "    verification mode: {}",
+                            describe_verification_mode(mode)
+                        );
+                    }
+                    if let Some(class) = last_run.last_failure_class {
+                        println!("    failure class: {}", describe_failure_class(class));
+                    }
                 }
                 if !evaluation.blockers.is_empty() {
                     println!("  blockers:");
@@ -787,6 +944,9 @@ fn print_overview(report: &OverviewReport) {
                 "- {} [{}] {}",
                 failure.target_name, failure.consecutive_failure_count, failure.summary
             );
+            if let Some(class) = failure.last_failure_class {
+                println!("  failure class: {}", describe_failure_class(class));
+            }
         }
     }
 
@@ -802,6 +962,18 @@ fn print_overview(report: &OverviewReport) {
                 run.finished_at_unix_ms
             );
             println!("  {}", run.summary);
+            if let Some(value) = run.last_verified_at_unix_ms {
+                println!("  verified at: {}", value);
+            }
+            if let Some(value) = run.last_full_verified_at_unix_ms {
+                println!("  full verified at: {}", value);
+            }
+            if let Some(mode) = run.last_verification_mode {
+                println!("  verification mode: {}", describe_verification_mode(mode));
+            }
+            if let Some(class) = run.last_failure_class {
+                println!("  failure class: {}", describe_failure_class(class));
+            }
         }
     }
 
@@ -878,6 +1050,22 @@ fn print_status(report: &StatusReport) {
         println!("  plist: {}", path.display());
     }
     println!("  {}", report.runner_agent.detail);
+    if let Some(operation) = &report.active_target_operation {
+        println!(
+            "Active target operation: {} {}",
+            describe_target_operation_kind(operation.kind),
+            if operation.dry_run {
+                "(dry-run)"
+            } else {
+                "(live)"
+            }
+        );
+        println!(
+            "  target: {} ({})",
+            operation.target_name, operation.selector
+        );
+        println!("  started at: {}", operation.started_at_unix_ms);
+    }
 
     let remote_host = report
         .remote
@@ -885,8 +1073,19 @@ fn print_status(report: &StatusReport) {
         .as_deref()
         .unwrap_or("none reachable");
     println!(
-        "Remote OneDrive: {:?} (host: {})",
-        report.remote.service_state, remote_host
+        "Remote OneDrive: {:?} (host: {}, service: {}, scope: {:?})",
+        report.remote.service_state,
+        remote_host,
+        report.remote.service_name,
+        report.remote.service_scope
+    );
+    println!(
+        "  coordination: {}",
+        if report.remote.coordination_enabled {
+            "enabled"
+        } else {
+            "disabled"
+        }
     );
     println!("  {}", report.remote.detail);
 
@@ -1077,6 +1276,15 @@ fn print_run_target(report: &TargetRunReport) {
         "Preflight ready: {}",
         if report.preflight_ready { "yes" } else { "no" }
     );
+    if let Some(value) = report.verified_at_unix_ms {
+        println!("Verified at: {}", value);
+    }
+    if let Some(mode) = report.verification_mode {
+        println!("Verification mode: {}", describe_verification_mode(mode));
+    }
+    if let Some(class) = report.failure_class {
+        println!("Failure class: {}", describe_failure_class(class));
+    }
     print_target_evaluation(&report.evaluation);
     println!("  execution steps:");
     for step in &report.steps {
@@ -1090,6 +1298,80 @@ fn print_run_target(report: &TargetRunReport) {
     }
 }
 
+fn print_verify_target(report: &TargetVerifyReport) {
+    println!("SyncSteward Target Verify: {:?}", report.outcome);
+    println!("{}", report.summary);
+    println!("Config source: {}", report.config_source);
+    println!("Selector: {}", report.selector);
+    println!(
+        "Preflight ready: {}",
+        if report.preflight_ready { "yes" } else { "no" }
+    );
+    if let Some(value) = report.verified_at_unix_ms {
+        println!("Verified at: {}", value);
+    }
+    println!(
+        "Verification mode: {}",
+        describe_verification_mode(report.verification_mode)
+    );
+    if let Some(class) = report.failure_class {
+        println!("Failure class: {}", describe_failure_class(class));
+    }
+    print_target_evaluation(&report.evaluation);
+    println!("  verification steps:");
+    for step in &report.steps {
+        println!(
+            "    [{}] {}: {}",
+            describe_step_status(step.status),
+            step.id,
+            step.summary
+        );
+        println!("      {}", step.detail);
+    }
+}
+
+fn print_target_recovery(report: &TargetRecoveryReport) {
+    println!(
+        "SyncSteward {}: {:?}",
+        describe_recovery_action(report.action),
+        report.outcome
+    );
+    println!("{}", report.summary);
+    println!("Config source: {}", report.config_source);
+    println!("Selector: {}", report.selector);
+    println!("Target: {}", report.target_name);
+    println!("Dry run: {}", if report.dry_run { "yes" } else { "no" });
+    if report.confirmation_required {
+        println!("Confirmed: {}", if report.confirmed { "yes" } else { "no" });
+    }
+    if report.recovery_steps.is_empty() {
+        println!("Recovery steps: none");
+    } else {
+        println!("Recovery steps:");
+        for step in &report.recovery_steps {
+            println!(
+                "  [{}] {}: {}",
+                describe_step_status(step.status),
+                step.id,
+                step.summary
+            );
+            println!("      {}", step.detail);
+        }
+    }
+    if let Some(run) = &report.run {
+        println!("Run summary:");
+        print_run_target(run);
+    } else {
+        println!("Run summary: none");
+    }
+    if let Some(verification) = &report.verification {
+        println!("Verification summary:");
+        print_verify_target(verification);
+    } else {
+        println!("Verification summary: none");
+    }
+}
+
 fn print_run_cycle(report: &RunCycleReport) {
     println!("SyncSteward Run Cycle: {:?}", report.outcome);
     println!("{}", report.summary);
@@ -1100,6 +1382,20 @@ fn print_run_cycle(report: &RunCycleReport) {
         if report.preflight_ready { "yes" } else { "no" }
     );
     println!("Approved targets: {}", report.approved_target_count);
+    if report.coordination_steps.is_empty() {
+        println!("Remote coordination: none");
+    } else {
+        println!("Remote coordination:");
+        for step in &report.coordination_steps {
+            println!(
+                "  [{}] {}: {}",
+                describe_step_status(step.status),
+                step.id,
+                step.summary
+            );
+            println!("    {}", step.detail);
+        }
+    }
     if report.target_runs.is_empty() {
         println!("Target runs: none");
     } else {
@@ -1368,6 +1664,9 @@ fn print_config_update(report: &ConfigUpdateReport) {
     println!("{}", report.summary);
     println!("Config source: {}", report.config_source);
     println!("Path: {}", report.path.display());
+    if let Some(path) = &report.backup_path {
+        println!("Backup: {}", path.display());
+    }
     println!("Dry run: {}", if report.dry_run { "yes" } else { "no" });
     println!("Created: {}", if report.created { "yes" } else { "no" });
     if report.changed_fields.is_empty() {
@@ -1398,10 +1697,52 @@ fn print_prune_state(report: &PruneStateReport) {
     }
 }
 
+fn print_quarantine_artifacts(report: &ArtifactQuarantineReport) {
+    println!("SyncSteward Quarantine Artifacts: {:?}", report.outcome);
+    println!("{}", report.summary);
+    println!("Config source: {}", report.config_source);
+    println!("Dry run: {}", if report.dry_run { "yes" } else { "no" });
+    if report.selectors.is_empty() {
+        println!("Selectors: all scanned roots");
+    } else {
+        println!("Selectors:");
+        for selector in &report.selectors {
+            println!("  - {}", selector);
+        }
+    }
+    println!("Roots scanned:");
+    for root in &report.roots_scanned {
+        println!("  - {}", root.display());
+    }
+    println!("Conflict artifacts: {}", report.conflict_count);
+    println!("safeBackup artifacts: {}", report.safe_backup_count);
+    println!("Moved: {}", report.moved_count);
+    println!("Quarantine root: {}", report.quarantine_root.display());
+    if let Some(path) = &report.manifest_path {
+        println!("Manifest: {}", path.display());
+    }
+    if report.artifacts.is_empty() {
+        println!("Artifacts: none");
+    } else {
+        println!("Artifacts:");
+        for artifact in &report.artifacts {
+            println!(
+                "  - {:?}: {} -> {}",
+                artifact.kind,
+                artifact.source_path.display(),
+                artifact.quarantine_path.display()
+            );
+        }
+    }
+}
+
 fn print_config_scaffold(report: &ConfigScaffoldReport) {
     println!("SyncSteward Config Scaffold: {:?}", report.outcome);
     println!("{}", report.summary);
     println!("Path: {}", report.path.display());
+    if let Some(path) = &report.backup_path {
+        println!("Backup: {}", path.display());
+    }
     println!(
         "Policies: {} folder overrides, {} file-class defaults",
         report.folder_policy_count, report.file_class_policy_count
@@ -1412,6 +1753,9 @@ fn print_ensure_target_ids(report: &EnsureTargetIdsReport) {
     println!("SyncSteward Ensure Target IDs: {:?}", report.outcome);
     println!("{}", report.summary);
     println!("Config path: {}", report.path.display());
+    if let Some(path) = &report.backup_path {
+        println!("Backup: {}", path.display());
+    }
     println!("Assigned: {}", report.assigned_count);
     println!("Preserved: {}", report.preserved_count);
     if report.assignments.is_empty() {
@@ -1430,6 +1774,9 @@ fn print_add_managed_target(report: &AddManagedTargetReport) {
     println!("SyncSteward Add Managed Target: {:?}", report.outcome);
     println!("{}", report.summary);
     println!("Config path: {}", report.path.display());
+    if let Some(path) = &report.backup_path {
+        println!("Backup: {}", path.display());
+    }
     print_target_record(&report.target);
 }
 
@@ -1437,6 +1784,9 @@ fn print_relocate_managed_target(report: &RelocateManagedTargetReport) {
     println!("SyncSteward Relocate Managed Target: {:?}", report.outcome);
     println!("{}", report.summary);
     println!("Config path: {}", report.path.display());
+    if let Some(path) = &report.backup_path {
+        println!("Backup: {}", path.display());
+    }
     println!("Selector: {}", report.selector);
     println!(
         "Previous local path: {}",
@@ -1523,6 +1873,40 @@ fn describe_action_outcome(outcome: ActionOutcome) -> &'static str {
     }
 }
 
+fn describe_failure_class(class: FailureClass) -> &'static str {
+    match class {
+        FailureClass::Transport => "transport",
+        FailureClass::Auth => "auth",
+        FailureClass::Path => "path",
+        FailureClass::Divergence => "divergence",
+        FailureClass::Snapshot => "snapshot",
+        FailureClass::Unknown => "unknown",
+    }
+}
+
+fn describe_verification_mode(mode: VerificationMode) -> &'static str {
+    match mode {
+        VerificationMode::Full => "full",
+        VerificationMode::SizeAndSample => "size_and_sample",
+    }
+}
+
+fn describe_recovery_action(action: RecoveryAction) -> &'static str {
+    match action {
+        RecoveryAction::Repair => "Repair Target",
+        RecoveryAction::Rebaseline => "Rebaseline Target",
+    }
+}
+
+fn describe_target_operation_kind(kind: TargetOperationKind) -> &'static str {
+    match kind {
+        TargetOperationKind::Run => "Run Target",
+        TargetOperationKind::Verify => "Verify Target",
+        TargetOperationKind::Repair => "Repair Target",
+        TargetOperationKind::Rebaseline => "Rebaseline Target",
+    }
+}
+
 fn describe_alert_severity(severity: AlertSeverity) -> &'static str {
     match severity {
         AlertSeverity::Info => "INFO",
@@ -1547,6 +1931,13 @@ fn action_exit_code(outcome: ActionOutcome) -> i32 {
     }
 }
 
+fn runner_tick_exit_code(outcome: ActionOutcome) -> i32 {
+    match outcome {
+        ActionOutcome::Failed => 1,
+        ActionOutcome::Success | ActionOutcome::NoOp | ActionOutcome::Blocked => 0,
+    }
+}
+
 fn fatal_error(message: &str) -> i32 {
     eprintln!("{message}");
     1
@@ -1555,4 +1946,26 @@ fn fatal_error(message: &str) -> i32 {
 fn print_json<T: serde::Serialize>(value: &T) -> Result<(), serde_json::Error> {
     println!("{}", serde_json::to_string_pretty(value)?);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{action_exit_code, runner_tick_exit_code};
+    use syncsteward_core::ActionOutcome;
+
+    #[test]
+    fn runner_tick_treats_blocked_as_successful_scheduler_exit() {
+        assert_eq!(runner_tick_exit_code(ActionOutcome::Success), 0);
+        assert_eq!(runner_tick_exit_code(ActionOutcome::NoOp), 0);
+        assert_eq!(runner_tick_exit_code(ActionOutcome::Blocked), 0);
+        assert_eq!(runner_tick_exit_code(ActionOutcome::Failed), 1);
+    }
+
+    #[test]
+    fn action_exit_code_preserves_operator_facing_blocked_status() {
+        assert_eq!(action_exit_code(ActionOutcome::Success), 0);
+        assert_eq!(action_exit_code(ActionOutcome::NoOp), 0);
+        assert_eq!(action_exit_code(ActionOutcome::Blocked), 2);
+        assert_eq!(action_exit_code(ActionOutcome::Failed), 1);
+    }
 }

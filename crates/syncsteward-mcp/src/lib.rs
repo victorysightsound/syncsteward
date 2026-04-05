@@ -9,23 +9,26 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use std::path::PathBuf;
 use syncsteward_core::{
-    ActionTarget, AddManagedTargetReport, AlertReport, ConfigPatch, ConfigScaffoldReport,
-    ConfigSchemaReport, ConfigSnapshotReport, ConfigUpdateReport, ControlReport,
-    EnsureTargetIdsReport, LogAcknowledgeReport, NotifyAlertsReport, OverviewReport, PolicyMode,
-    PreflightReport, PruneStateReport, RelocateManagedTargetReport, RunCycleReport,
+    ActionTarget, AddManagedTargetReport, AlertReport, ArtifactQuarantineReport, ConfigPatch,
+    ConfigScaffoldReport, ConfigSchemaReport, ConfigSnapshotReport, ConfigUpdateReport,
+    ControlReport, EnsureTargetIdsReport, LogAcknowledgeReport, NotifyAlertsReport, OverviewReport,
+    PolicyMode, PreflightReport, PruneStateReport, RelocateManagedTargetReport, RunCycleReport,
     RunnerAgentControlReport, RunnerAgentStatusReport, RunnerTickReport, StatusReport,
-    SyncTargetInventoryReport, TargetCheckReport, TargetCheckSetReport, TargetRunReport,
-    acknowledge_latest_log as core_acknowledge_latest_log,
+    SyncTargetInventoryReport, TargetCheckReport, TargetCheckSetReport, TargetRecoveryReport,
+    TargetRunReport, TargetVerifyReport, acknowledge_latest_log as core_acknowledge_latest_log,
     add_managed_target as core_add_managed_target, alerts as core_alerts,
     check_target as core_check_target, check_targets as core_check_targets,
     config_schema as core_config_schema, config_snapshot as core_config_snapshot,
     ensure_target_ids as core_ensure_target_ids, install_runner_agent as core_install_runner_agent,
     notify_alerts as core_notify_alerts, overview as core_overview, pause, preflight,
-    prune_state as core_prune_state, relocate_managed_target as core_relocate_managed_target,
+    prune_state as core_prune_state, quarantine_artifacts as core_quarantine_artifacts,
+    rebaseline_target as core_rebaseline_target,
+    relocate_managed_target as core_relocate_managed_target, repair_target as core_repair_target,
     resume, run_cycle as core_run_cycle, run_target as core_run_target,
     runner_agent_status as core_runner_agent_status, runner_tick as core_runner_tick,
     scaffold_config as core_scaffold_config, status, targets,
     uninstall_runner_agent as core_uninstall_runner_agent, update_config as core_update_config,
+    verify_target as core_verify_target,
 };
 
 type McpResult<T> = Result<Json<T>, String>;
@@ -40,6 +43,15 @@ struct RunTargetRequest {
     target: String,
     #[serde(default)]
     dry_run: bool,
+}
+
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+struct RecoveryRequest {
+    target: String,
+    #[serde(default)]
+    dry_run: bool,
+    #[serde(default)]
+    confirm: bool,
 }
 
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
@@ -61,6 +73,14 @@ struct RelocateManagedTargetRequest {
 
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 struct DryRunRequest {
+    #[serde(default)]
+    dry_run: bool,
+}
+
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+struct ArtifactQuarantineRequest {
+    #[serde(default)]
+    selectors: Vec<String>,
     #[serde(default)]
     dry_run: bool,
 }
@@ -239,6 +259,62 @@ impl SyncStewardMcpServer {
     }
 
     #[tool(
+        description = "Verify one configured backup-only target against the remote store without performing a sync write."
+    )]
+    async fn verify_target(
+        &self,
+        Parameters(request): Parameters<TargetSelectorRequest>,
+    ) -> McpResult<TargetVerifyReport> {
+        let config_path = self.config_path.clone();
+        let report = tokio::task::spawn_blocking(move || {
+            core_verify_target(config_path.as_deref(), &request.target)
+        })
+        .await
+        .map_err(|error| error.to_string())?
+        .map_err(|error| error.to_string())?;
+        Ok(Json(report))
+    }
+
+    #[tool(
+        description = "Run one explicit repair flow for a configured backup-only target. Supports dry-run mode for safe validation."
+    )]
+    async fn repair_target(
+        &self,
+        Parameters(request): Parameters<RecoveryRequest>,
+    ) -> McpResult<TargetRecoveryReport> {
+        let config_path = self.config_path.clone();
+        let report = tokio::task::spawn_blocking(move || {
+            core_repair_target(config_path.as_deref(), &request.target, request.dry_run)
+        })
+        .await
+        .map_err(|error| error.to_string())?
+        .map_err(|error| error.to_string())?;
+        Ok(Json(report))
+    }
+
+    #[tool(
+        description = "Run one explicit rebaseline flow for a configured backup-only target. This rebuilds the remote target from current local contents and requires confirm=true unless dry_run is enabled."
+    )]
+    async fn rebaseline_target(
+        &self,
+        Parameters(request): Parameters<RecoveryRequest>,
+    ) -> McpResult<TargetRecoveryReport> {
+        let config_path = self.config_path.clone();
+        let report = tokio::task::spawn_blocking(move || {
+            core_rebaseline_target(
+                config_path.as_deref(),
+                &request.target,
+                request.dry_run,
+                request.confirm,
+            )
+        })
+        .await
+        .map_err(|error| error.to_string())?
+        .map_err(|error| error.to_string())?;
+        Ok(Json(report))
+    }
+
+    #[tool(
         description = "Run one guarded cycle for the approved target set in SyncSteward config. Supports dry-run mode for safe validation."
     )]
     async fn run_cycle(
@@ -382,6 +458,23 @@ impl SyncStewardMcpServer {
         let config_path = self.config_path.clone();
         let report = tokio::task::spawn_blocking(move || {
             core_prune_state(config_path.as_deref(), request.dry_run)
+        })
+        .await
+        .map_err(|error| error.to_string())?
+        .map_err(|error| error.to_string())?;
+        Ok(Json(report))
+    }
+
+    #[tool(
+        description = "Move .conflict and victorystore-safeBackup artifacts into a quarantine directory so preflight can pass safely. Supports dry-run mode and optional target selectors."
+    )]
+    async fn quarantine_artifacts(
+        &self,
+        Parameters(request): Parameters<ArtifactQuarantineRequest>,
+    ) -> McpResult<ArtifactQuarantineReport> {
+        let config_path = self.config_path.clone();
+        let report = tokio::task::spawn_blocking(move || {
+            core_quarantine_artifacts(config_path.as_deref(), &request.selectors, request.dry_run)
         })
         .await
         .map_err(|error| error.to_string())?

@@ -1,67 +1,244 @@
-# SyncSteward Plan
+# SyncSteward DIAL Plan
 
-## Phase 1: Health and Freeze Control
+## Product Target
 
-- convert the project into a real workspace
-- expose shared status and preflight logic in a core crate
-- ship matching CLI and MCP inspection surfaces
-- keep sync automation paused until the system is measurably clean
+SyncSteward is a safety-first sync control plane for the current Mac plus Victorystore setup.
 
-## Phase 2: Coordinated Pause and Resume
+Long-term shape:
 
-- add explicit local launch agent pause and resume actions
-- add explicit remote OneDrive pause and resume actions
-- require preflight success before any resume path is allowed
-- record every mutation action in structured logs
-- make pause idempotent and fail closed
-- surface the same controls in both CLI and MCP
+- SyncSteward on the Mac is the operator control plane.
+- Victorystore remains the managed sync endpoint and remote worker host.
+- All real sync policy, state, recovery, and scheduling live in the shared Rust core.
+- CLI and MCP are the primary product surfaces until the core is production-ready.
+- UI is deferred until after the control plane is stable and proven.
 
-## Phase 3: Folder Policies and Safe Execution
+## Production-Ready Definition
 
-- inventory legacy `cloud-sync.sh` targets and attach recommended SyncSteward policies
-- acknowledge a historical incident log as the current safe baseline after cleanup
-- scaffold a real SyncSteward config from the current target recommendations
-- classify folders as two-way, backup-only, excluded, or hold
-- add explicit managed subtargets so curated paths can run safely while broad parent folders remain on hold
-- assign durable IDs to managed targets as groundwork for relocate/adopt workflows
-- add managed-target lifecycle commands so curated paths can be registered and relocated without hand-editing config
-- explain effective mode and blockers per target before any selective re-enablement
-- protect live SQLite database files and sidecars with backup-only defaults unless explicitly overridden
-- protect native Apple media library bundles with target-specific exclusions inside executable backup-only targets
-- add snapshot-backed execution for runtime SQLite targets like `.memloft`
-- run preflight and folder gating before each sync
-- add single-target execution for approved backup-only targets with dry-run support
-- make dry-run validation observable without overwriting the live target-run state used by alerts
-- record per-target last outcome in state and audit
-- define the approved target set in config and add one guarded cycle command for daemon/UI orchestration
-- hold the legacy sync lock for the full approved cycle so overlapping runs cannot interleave
-- allow folder-scoped rebaseline instead of broad `--resync`
-- add quarantine handling for conflict and `safeBackup` artifacts
-- implement explicit relocate flows for managed targets whose root paths move
-- defer automatic adopt/detect-move behavior until after the explicit relocate path is proven
+The product is production-ready only when all of these are true:
 
-## Phase 4: Monitoring and Alerts
+- configuration loads, validates, and writes cleanly
+- inventory is explicit and matches reality
+- remote OneDrive coordination is automatic and idempotent
+- live runs are verified, not merely exited cleanly
+- repair, rebaseline, and quarantine flows are safe
+- alerts are accurate, deduplicated, and recoverable
+- scheduled runs do not overlap or race with manual runs
+- the operator can prove behavior through repeatable validation checks
+- legacy compatibility paths are optional, not required for correctness
 
-- add notifications for blocked sync, repeated failures, stale last-success time, and new drift artifacts
-- store sync history, health transitions, and acknowledgements
-- expose alert state in both CLI and MCP
-- ship a first local notification path for active alerts
-- make the approved-target cycle the future daemon/menu bar execution entry point
-- add a scheduled runner-tick command that only executes the approved cycle when due
-- add a dedicated SyncSteward runner launch agent that schedules `runner-tick` without reusing the legacy broad sync job
-- make scheduled execution independent of launchd's stripped default environment by exporting a stable tool `PATH` and resolving external tools from common install locations
-- refine alert deduplication and escalation after the first notification slice lands
-- suppress repeated scheduled notifications for unchanged alert sets until a configurable repeat window expires
-- send one recovery notification when a previously active alert set clears
-- add one composed overview surface for CLI, MCP, and future UI consumers so operator dashboards do not need to stitch together multiple health commands
-- harden approved-target execution with bounded retries around transient `rclone` transport failures
+## Phase 0: Baseline And Control Surface
 
-## Phase 5: UI
+Purpose:
 
-- add a menu bar app
-- start with a native macOS shell that reads the composed `overview` surface, shows runner-agent state, and exposes only safe refresh, dry-run, and open-log/config actions
-- make direct app launch open a visible control window so the shell does not feel inert outside the menu bar
-- provide a thin installer path that places `SyncSteward.app` in `~/Applications` without splitting app-bundle behavior away from the dev-built shell and CLI
-- show green/yellow/red health state
-- expose sync now, pause, resume, open logs, and reveal conflicts
-- keep all real logic in the shared core plus CLI and MCP layers
+- lock the product contract before more features land
+- keep the docs, config model, and operator surfaces aligned
+
+Tasks:
+
+- confirm the workspace layout and shared Rust core boundaries
+- keep the config schema and snapshot model authoritative
+- keep `status`, `preflight`, `overview`, and `config` available in both CLI and MCP
+- keep the docs database synchronized with the markdown specs
+- define the stable terminology for targets, managed targets, approved targets, verification, and recovery
+
+Exit criteria:
+
+- docs, config model, and operator surfaces describe the same system
+- status and preflight are reliable enough to gate all later phases
+
+## Phase 1: Core State And Configuration
+
+Purpose:
+
+- make the state model explicit enough to support production operations
+
+Tasks:
+
+- normalize all config inputs and snapshot outputs
+- keep operator paths, remote sync root, scan roots, and policy defaults in one config model
+- persist target state, last success time, failure class, consecutive failures, and repair timestamps
+- keep dry-run paths observable without overwriting live state
+- keep the CLI and MCP config surfaces in parity
+
+Exit criteria:
+
+- config changes are deterministic
+- state can be inspected, updated, and persisted without ambiguity
+- the control surfaces expose the same model to humans and automation
+
+## Phase 2: Safe Coordination With Victorystore
+
+Purpose:
+
+- guarantee that SyncSteward and Victorystore OneDrive do not fight over the same tree
+
+Tasks:
+
+- pause Victorystore OneDrive before live sync work when coordination is enabled
+- resume Victorystore OneDrive after successful coordination or safe failure
+- make pause and resume idempotent and fail-closed
+- record coordination steps in run history and audit output
+- materialize fragile instruction-file symlink chains into real files inside the remote sync root
+- keep dry-run behavior visible without mutating the remote endpoint
+
+Exit criteria:
+
+- one SyncSteward run can safely bracket the remote worker
+- coordination is automatic, logged, and repeatable
+- symlink-chain failures are eliminated as a class of sync noise
+
+## Phase 3: Inventory, Policy, And Target Identity
+
+Purpose:
+
+- turn the old folder list into explicit managed targets with durable identity
+
+Tasks:
+
+- inventory legacy `cloud-sync.sh` targets when present
+- fall back to managed-target config when the legacy script is missing
+- classify targets as two-way, backup_only, hold, or excluded
+- protect live SQLite data with snapshots and sidecar exclusions
+- protect Apple bundles and other fragile packages with target-specific exclusions
+- assign durable IDs to managed targets
+- add add/relocate/rebaseline lifecycle commands for managed targets
+- support target-scoped readiness checks and blocker explanations
+
+Exit criteria:
+
+- every production target has an explicit policy
+- a target can move without losing identity or run history
+- the operator can explain why each target is ready or blocked
+
+## Phase 4: Execution, Verification, And Recovery
+
+Purpose:
+
+- make sync behavior correct, then prove it stayed correct
+
+Tasks:
+
+- keep `run-target` and `run-cycle` guarded by preflight and policy
+- add `verify-target` as a first-class operation
+- add `repair-target` and `rebaseline-target` as explicit recovery paths
+- require confirmation for destructive recovery actions and keep repair non-destructive
+- classify failures into transport, auth, path, divergence, snapshot, and unknown
+- retry transient transport failures without turning the cycle red too early
+- keep quarantine handling for conflict and safe-backup artifacts
+- make verified success the health signal, not a bare exit code
+
+Exit criteria:
+
+- a live target can be run, verified, repaired, and rebaselined from CLI and MCP
+- a transient failure does not poison the entire cycle
+- alerts reflect verified reality instead of optimistic exit status
+
+## Phase 5: Monitoring, Scheduling, And Alerts
+
+Purpose:
+
+- make the system self-explaining and safe to leave alone
+
+Tasks:
+
+- store history, transitions, acknowledgements, and recovery events
+- expose one composed `overview` surface for CLI, MCP, and future UI consumers
+- add alert deduplication and repeat-window suppression
+- send recovery notifications when active alert sets clear
+- add `runner-tick` for scheduled checks
+- add a dedicated runner launch agent with a stable tool path
+- keep scheduled execution separate from the legacy broad sync job
+
+Exit criteria:
+
+- scheduled execution is safe and predictable
+- alerts are useful instead of noisy
+- operator dashboards can read one summary surface
+
+## Phase 6: Legacy De-Risking And Migration
+
+Purpose:
+
+- remove the old shell-script model as an execution dependency
+
+Tasks:
+
+- keep `cloud-sync.sh` only as compatibility inventory when present
+- make SyncSteward-owned config the authoritative runtime model
+- ensure the legacy script is never required for normal execution
+- keep explicit managed targets covering the important curated paths
+- document the migration path away from the old broad sync job
+
+Exit criteria:
+
+- the product can run entirely from SyncSteward config and state
+- legacy discovery is optional, not required
+
+## Phase 7: Operator Validation And Regression Coverage
+
+Purpose:
+
+- prove the product under real operator scenarios before any UI work
+
+Tasks:
+
+- keep the operator validation checklist current
+- test missing paths, auth failures, transport failures, stale state, and drift artifacts
+- test pause/resume behavior under real endpoint conditions
+- test live sync on a small safe target set before trusting broad runs
+- keep regression tests for pruning, chronic failure alerts, verification timestamps, and dry-run safety
+- record known failure patterns in memory and docs
+
+Exit criteria:
+
+- every major failure class has a repeatable drill
+- the operator can prove the system is safe with CLI and MCP alone
+
+## Phase 8: Packaging, Support, And Production Hardening
+
+Purpose:
+
+- make the product easy to install, support, and maintain
+
+Tasks:
+
+- keep launchd integration and external tool path resolution robust
+- keep logs, state, and audit files organized and recoverable
+- make config and state writes atomic, explicit, and reversible
+- keep timestamped rollback copies for config overwrites and protect state persistence from partial writes
+- keep the docs database and markdown specs synchronized
+- add any missing packaging or install helpers needed for normal use
+- keep CI green on the core workspace
+
+Exit criteria:
+
+- the product can be maintained without tribal knowledge
+- operational recovery does not require manual state editing
+
+## Phase 9: UI, Deferred
+
+Purpose:
+
+- build the thin UI only after the control plane is proven
+
+Tasks:
+
+- create a native shell that reads the composed overview surface
+- expose safe refresh and open-log/config actions only
+- keep all sync logic in the shared core, CLI, and MCP layers
+- avoid adding any UI-only sync behavior
+
+Exit criteria:
+
+- the UI reads from the proven control plane instead of owning logic
+- the product remains CLI/MCP first even after the UI exists
+
+## Completion Rule
+
+Do not start the UI phase until Phase 8 is complete and the following are true:
+
+- the live Mac/Victorystore path set completes cleanly
+- verification is wired into the success signal
+- coordination with Victorystore OneDrive is automatic and stable
+- recovery paths have been exercised and tested
+- the operator validation checklist passes end to end

@@ -13,6 +13,8 @@ pub struct AppConfig {
     pub sync_script_path: PathBuf,
     pub rclone_log_dir: PathBuf,
     pub ssh_key_path: PathBuf,
+    #[serde(default = "default_remote_sync_root")]
+    pub remote_sync_root: String,
     #[serde(default = "default_sync_filter_path")]
     pub sync_filter_path: PathBuf,
     #[serde(default = "default_memloft_filter_path")]
@@ -28,11 +30,15 @@ pub struct AppConfig {
     #[serde(default)]
     pub managed_targets: Vec<ManagedTarget>,
     #[serde(default)]
+    pub coordination: CoordinationConfig,
+    #[serde(default)]
     pub alerts: AlertConfig,
     #[serde(default)]
     pub runner: RunnerConfig,
     #[serde(default)]
     pub policy: PolicyConfig,
+    #[serde(default)]
+    pub verification: VerificationConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]
@@ -40,6 +46,53 @@ pub struct RemoteConfig {
     pub ssh_user: String,
     pub preferred_hosts: Vec<String>,
     pub onedrive_service: String,
+    #[serde(default)]
+    pub rclone_ssh_mode: RcloneSshMode,
+    #[serde(default)]
+    pub onedrive_service_scope: RemoteServiceScope,
+    #[serde(default)]
+    pub sudo_password_op_reference: Option<String>,
+    #[serde(default)]
+    pub sudo_password_keychain_service: Option<String>,
+    #[serde(default)]
+    pub sudo_password_keychain_account: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, JsonSchema, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum RcloneSshMode {
+    #[default]
+    Auto,
+    Internal,
+    External,
+}
+
+impl RcloneSshMode {
+    pub fn uses_external_ssh(self) -> bool {
+        match self {
+            Self::Auto => cfg!(target_os = "macos"),
+            Self::Internal => false,
+            Self::External => true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, JsonSchema, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum RemoteServiceScope {
+    #[default]
+    System,
+    User,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]
+pub struct CoordinationConfig {
+    #[serde(default = "default_pause_remote_on_sync")]
+    pub pause_remote_on_sync: bool,
+    #[serde(default = "default_materialize_instruction_links")]
+    pub materialize_instruction_links: bool,
+    #[serde(default = "default_instruction_file_names")]
+    pub instruction_file_names: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]
@@ -100,6 +153,24 @@ pub struct RunnerLaunchAgentConfig {
     pub stderr_path: PathBuf,
     #[serde(default = "default_runner_launch_agent_run_at_load")]
     pub run_at_load: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]
+pub struct VerificationConfig {
+    #[serde(default)]
+    pub default_mode: VerificationMode,
+    #[serde(default = "default_verification_sample_file_count")]
+    pub sample_file_count: usize,
+    #[serde(default = "default_verification_full_after_hours")]
+    pub full_after_hours: u64,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, JsonSchema, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum VerificationMode {
+    Full,
+    #[default]
+    SizeAndSample,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]
@@ -211,6 +282,26 @@ impl Default for RunnerLaunchAgentConfig {
     }
 }
 
+impl Default for VerificationConfig {
+    fn default() -> Self {
+        Self {
+            default_mode: VerificationMode::default(),
+            sample_file_count: default_verification_sample_file_count(),
+            full_after_hours: default_verification_full_after_hours(),
+        }
+    }
+}
+
+impl Default for CoordinationConfig {
+    fn default() -> Self {
+        Self {
+            pause_remote_on_sync: default_pause_remote_on_sync(),
+            materialize_instruction_links: default_materialize_instruction_links(),
+            instruction_file_names: default_instruction_file_names(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub enum ConfigSource {
     Explicit(PathBuf),
@@ -242,6 +333,7 @@ impl Default for AppConfig {
             sync_script_path: PathBuf::from("~/bin/cloud-sync.sh"),
             rclone_log_dir: PathBuf::from("~/.config/rclone/logs"),
             ssh_key_path: PathBuf::from("~/.ssh/id_ed25519"),
+            remote_sync_root: default_remote_sync_root(),
             sync_filter_path: default_sync_filter_path(),
             memloft_filter_path: default_memloft_filter_path(),
             legacy_lock_path: default_legacy_lock_path(),
@@ -251,6 +343,11 @@ impl Default for AppConfig {
                 ssh_user: "john".to_string(),
                 preferred_hosts: vec!["192.168.77.135".to_string(), "192.168.195.155".to_string()],
                 onedrive_service: "onedrive@john.service".to_string(),
+                rclone_ssh_mode: RcloneSshMode::Auto,
+                onedrive_service_scope: RemoteServiceScope::System,
+                sudo_password_op_reference: None,
+                sudo_password_keychain_service: None,
+                sudo_password_keychain_account: None,
             },
             scan: ScanConfig {
                 roots: vec![
@@ -262,9 +359,11 @@ impl Default for AppConfig {
                 max_examples: 20,
             },
             managed_targets: Vec::new(),
+            coordination: CoordinationConfig::default(),
             alerts: AlertConfig::default(),
             runner: RunnerConfig::default(),
             policy: PolicyConfig::default(),
+            verification: VerificationConfig::default(),
         }
     }
 }
@@ -285,8 +384,28 @@ fn default_memloft_filter_path() -> PathBuf {
     PathBuf::from("~/.config/rclone/sync-filters-memloft.txt")
 }
 
+fn default_remote_sync_root() -> String {
+    "~/OneDrive".to_string()
+}
+
 fn default_legacy_lock_path() -> PathBuf {
     PathBuf::from("/tmp/cloud-sync.lock")
+}
+
+fn default_pause_remote_on_sync() -> bool {
+    true
+}
+
+fn default_materialize_instruction_links() -> bool {
+    true
+}
+
+fn default_instruction_file_names() -> Vec<String> {
+    vec![
+        "AGENTS.md".to_string(),
+        "CLAUDE.md".to_string(),
+        "GEMINI.md".to_string(),
+    ]
 }
 
 fn default_stale_success_after_hours() -> u64 {
@@ -339,6 +458,14 @@ fn default_runner_launch_agent_stderr_path() -> PathBuf {
 
 fn default_runner_launch_agent_run_at_load() -> bool {
     true
+}
+
+fn default_verification_sample_file_count() -> usize {
+    16
+}
+
+fn default_verification_full_after_hours() -> u64 {
+    24
 }
 
 fn default_file_class_policies() -> Vec<FileClassPolicy> {
@@ -482,6 +609,20 @@ fn normalize_config(mut config: AppConfig) -> Result<AppConfig> {
         .iter()
         .map(|path| expand_path(path))
         .collect();
+    config.remote_sync_root = config.remote_sync_root.trim().to_string();
+    config.remote.sudo_password_op_reference =
+        normalize_optional_value(config.remote.sudo_password_op_reference.as_deref());
+    config.remote.sudo_password_keychain_service =
+        normalize_optional_value(config.remote.sudo_password_keychain_service.as_deref());
+    config.remote.sudo_password_keychain_account =
+        normalize_optional_value(config.remote.sudo_password_keychain_account.as_deref());
+    config.coordination.instruction_file_names = config
+        .coordination
+        .instruction_file_names
+        .iter()
+        .map(|name| name.trim().to_string())
+        .filter(|name| !name.is_empty())
+        .collect();
     config.runner.approved_targets = config
         .runner
         .approved_targets
@@ -583,6 +724,16 @@ fn normalize_config(mut config: AppConfig) -> Result<AppConfig> {
     if config.remote.onedrive_service.trim().is_empty() {
         bail!("remote.onedrive_service must not be empty");
     }
+    if config.remote.sudo_password_keychain_account.is_some()
+        && config.remote.sudo_password_keychain_service.is_none()
+    {
+        bail!(
+            "remote.sudo_password_keychain_service must be set when remote.sudo_password_keychain_account is provided"
+        );
+    }
+    if config.remote_sync_root.is_empty() {
+        bail!("remote_sync_root must not be empty");
+    }
     if config.alerts.stale_success_after_hours == 0 {
         bail!("alerts.stale_success_after_hours must be greater than zero");
     }
@@ -611,17 +762,40 @@ fn normalize_config(mut config: AppConfig) -> Result<AppConfig> {
     Ok(config)
 }
 
-pub fn expand_path(path: &Path) -> PathBuf {
-    let raw = path.to_string_lossy();
-    if raw == "~" {
-        return home_dir().unwrap_or_else(|| PathBuf::from("/"));
+pub fn current_home_dir() -> PathBuf {
+    if let Some(home) = std::env::var_os("HOME").filter(|value| !value.is_empty()) {
+        return PathBuf::from(home);
     }
-    if let Some(suffix) = raw.strip_prefix("~/") {
-        if let Some(home) = home_dir() {
-            return home.join(suffix);
+    if let Some(home) = home_dir() {
+        return home;
+    }
+    if let Some(user) = std::env::var_os("USER").filter(|value| !value.is_empty()) {
+        #[cfg(target_os = "macos")]
+        {
+            return PathBuf::from("/Users").join(user);
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            return PathBuf::from("/home").join(user);
         }
     }
+    PathBuf::from("/")
+}
+
+fn expand_path_with_home(path: &Path, home: &Path) -> PathBuf {
+    let raw = path.to_string_lossy();
+    if raw == "~" {
+        return home.to_path_buf();
+    }
+    if let Some(suffix) = raw.strip_prefix("~/") {
+        return home.join(suffix);
+    }
     path.to_path_buf()
+}
+
+pub fn expand_path(path: &Path) -> PathBuf {
+    let home = current_home_dir();
+    expand_path_with_home(path, &home)
 }
 
 fn normalize_optional_value(value: Option<&str>) -> Option<String> {
@@ -634,7 +808,8 @@ fn normalize_optional_value(value: Option<&str>) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        FileClass, ManagedTarget, PolicyConfig, PolicyMode, expand_path, normalize_optional_value,
+        FileClass, ManagedTarget, PolicyConfig, PolicyMode, expand_path, expand_path_with_home,
+        normalize_optional_value,
     };
     use std::path::{Path, PathBuf};
 
@@ -643,6 +818,13 @@ mod tests {
         let expanded = expand_path(Path::new("~/Library"));
         assert!(expanded.ends_with(PathBuf::from("Library")));
         assert_ne!(expanded, PathBuf::from("~/Library"));
+    }
+
+    #[test]
+    fn expands_tilde_prefix_with_explicit_home() {
+        let expanded =
+            expand_path_with_home(Path::new("~/Library"), Path::new("/Users/syncsteward"));
+        assert_eq!(expanded, PathBuf::from("/Users/syncsteward/Library"));
     }
 
     #[test]
